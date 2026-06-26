@@ -35,3 +35,31 @@ export interface ChatSession {
   createdAt: Date
   updatedAt: Date
 }
+
+export interface ProductProfile {
+  productName: string
+  websiteUrl: string
+  shortDescription: string
+  longDescription: string
+  category: string
+  logoUrl: string
+  logoImageUrl: string
+  screenshotImageUrl: string
+  promoImageUrl: string
+  bannerImageUrl: string
+  companyName: string
+  companyWebsite: string
+  contactEmail: string
+  companyEmail: string
+  contactFirstName: string
+  contactLastName: string
+  privacyPolicyUrl: string
+  termsUrl: string
+  twitterUrl: string
+  linkedinUrl: string
+  githubUrl: string
+  keywords: string
+  tags: string
+  extraInfo: string
+  lockedFields: string
+}

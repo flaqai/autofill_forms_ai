@@ -1,28 +1,14 @@
-import { useState } from 'react'
-import { Button, Input } from '@/components/ui'
+import { Button } from '@/components/ui'
 
 interface FormFillDialogProps {
-  onConfirm: (url: string) => void
+  onConfirm: () => void
   onClose: () => void
 }
 
 export const FormFillDialog = ({ onConfirm, onClose }: FormFillDialogProps) => {
-  const [url, setUrl] = useState('')
-  const [error, setError] = useState('')
-
   const handleConfirm = () => {
-    if (!url.trim()) {
-      setError('请输入网址')
-      return
-    }
-
-    try {
-      new URL(url) // Validate URL
-      onConfirm(url)
-      onClose()
-    } catch {
-      setError('请输入有效的网址')
-    }
+    onConfirm()
+    onClose()
   }
 
   return (
@@ -54,27 +40,11 @@ export const FormFillDialog = ({ onConfirm, onClose }: FormFillDialogProps) => {
 
         {/* Content */}
         <div className="p-4 space-y-3">
-          <div>
-            <label className="block text-sm font-medium text-slate-700 mb-1.5">
-              参考网址
-            </label>
-            <Input
-              type="url"
-              placeholder="https://example.com"
-              value={url}
-              onChange={(e) => {
-                setUrl(e.target.value)
-                setError('')
-              }}
-              onKeyDown={(e) => e.key === 'Enter' && handleConfirm()}
-              className="w-full"
-            />
-            {error && (
-              <p className="mt-1.5 text-xs text-red-600">{error}</p>
-            )}
-          </div>
-          <p className="text-xs text-slate-500">
-            AI 将访问该网址并提取内容,用于填充当前页面的表单
+          <p className="text-sm text-slate-700">
+            将使用设置页保存的推广资料填充当前网页表单。
+          </p>
+          <p className="text-xs text-slate-500 leading-relaxed">
+            AI 只负责把你的真实资料匹配到不同网站的字段里，不会自动提交表单。你可以在网页内检查和修改后再提交。
           </p>
         </div>
 

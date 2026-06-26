@@ -51,14 +51,14 @@ export const WelcomeView = ({ onFormFillClick }: WelcomeViewProps) => {
   }
 
   return (
-    <div className="h-full flex flex-col items-center justify-center p-6">
-      <div className="w-full max-w-md space-y-6">
+    <div className="h-full flex flex-col items-center justify-start p-4 pt-8">
+      <div className="w-full max-w-sm space-y-4">
         {/* Welcome Message */}
-        <div className="text-center space-y-2">
-          <h1 className="text-2xl font-bold text-slate-900">
+        <div className="text-center space-y-1.5">
+          <h1 className="text-xl font-bold text-slate-900">
             {t('home.welcomeMessage')}
           </h1>
-          <p className="text-sm text-slate-500">
+          <p className="text-xs text-slate-500">
             选择一个工具开始使用,或直接在下方输入消息
           </p>
         </div>
@@ -71,21 +71,21 @@ export const WelcomeView = ({ onFormFillClick }: WelcomeViewProps) => {
           <div className="space-y-2">
             <ActionItem
               icon="⛶"
-              title="全屏聊天"
-              description="在新标签页中打开,获得更大的对话空间"
+              title="独立窗口"
+              description="把插件移到单独窗口,减少网页遮挡"
               onClick={handleFullscreenClick}
             />
             <ActionItem
               icon="📝"
               title="填充表单"
-              description="使用网页内容智能填充表单字段"
+              description="使用推广资料智能匹配表单字段"
               onClick={onFormFillClick}
             />
           </div>
         </div>
 
         {/* Quick Tips */}
-        <div className="p-4 bg-gradient-to-r from-blue-50 to-purple-50 rounded-xl border border-blue-100">
+        <div className="p-3 bg-blue-50 rounded-xl border border-blue-100">
           <div className="flex items-start gap-2.5">
             <span className="text-lg flex-shrink-0">💡</span>
             <div>

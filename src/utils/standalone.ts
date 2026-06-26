@@ -1,20 +1,34 @@
 /**
- * Opens the standalone full-screen version of the extension in a new tab
+ * Opens the standalone version of the extension in a separate popup window.
  * @param from - Source of the navigation (e.g., 'sidebar', 'popup')
  * @param sessionId - Optional session ID to restore
  */
-export const openStandalonePage = (from: string = 'sidebar', sessionId?: string) => {
-  const params = new URLSearchParams({ from, mode: 'standalone' })
-  if (sessionId) {
-    params.append('sessionId', sessionId)
+export const openStandalonePage = async (from: string = 'sidebar', sessionId?: string, autoFill: boolean = false) => {
+  try {
+    const response = await chrome.runtime.sendMessage({
+      action: 'openStandaloneWindow',
+      from,
+      sessionId,
+      autoFill
+    })
+
+    if (response?.success && from === 'sidebar') {
+      window.close()
+    }
+  } catch {
+    const params = new URLSearchParams({ from, mode: 'standalone' })
+    if (sessionId) {
+      params.append('sessionId', sessionId)
+    }
+    if (autoFill) {
+      params.append('autoFill', '1')
+    }
+
+    chrome.tabs.create({
+      url: chrome.runtime.getURL(`sidepanel.html?${params.toString()}`),
+      active: true
+    })
   }
-
-  const url = chrome.runtime.getURL(`sidepanel.html?${params.toString()}`)
-
-  chrome.tabs.create({
-    url,
-    active: true
-  })
 }
 
 /**
@@ -25,7 +39,8 @@ export const getUrlParams = () => {
   return {
     from: params.get('from'),
     sessionId: params.get('sessionId'),
-    mode: params.get('mode')
+    mode: params.get('mode'),
+    autoFill: params.get('autoFill')
   }
 }
 

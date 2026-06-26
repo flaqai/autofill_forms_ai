@@ -4,9 +4,10 @@ import { useTranslation } from 'react-i18next'
 interface ChatInputProps {
   onSend: (message: string) => void
   disabled?: boolean
+  leadingAction?: React.ReactNode
 }
 
-export const ChatInput = ({ onSend, disabled }: ChatInputProps) => {
+export const ChatInput = ({ onSend, disabled, leadingAction }: ChatInputProps) => {
   const { t } = useTranslation()
   const [input, setInput] = useState('')
   const textareaRef = useRef<HTMLTextAreaElement>(null)
@@ -33,22 +34,27 @@ export const ChatInput = ({ onSend, disabled }: ChatInputProps) => {
   }
 
   return (
-    <div className="p-4 bg-white border-t border-slate-200">
-      <div className="relative flex items-end gap-2 bg-white rounded-2xl border-2 border-slate-200 focus-within:border-blue-400 transition-all shadow-sm hover:shadow-md">
+    <div className="p-3 bg-white border-t border-slate-200">
+      {leadingAction && (
+        <div className="mb-2">
+          {leadingAction}
+        </div>
+      )}
+      <div className="relative flex items-end gap-2 bg-white rounded-xl border-2 border-slate-200 focus-within:border-blue-400 transition-all shadow-sm">
         <textarea
           ref={textareaRef}
           value={input}
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={handleKeyDown}
           placeholder={t('chat.inputPlaceholder')}
-          className="flex-1 max-h-32 min-h-[44px] bg-transparent resize-none outline-none text-sm px-4 py-3 text-slate-700 placeholder-slate-400"
+          className="flex-1 max-h-24 min-h-[40px] bg-transparent resize-none outline-none text-sm px-3 py-2.5 text-slate-700 placeholder-slate-400"
           rows={1}
           disabled={disabled}
         />
         <button
           onClick={handleSend}
           disabled={!input.trim() || disabled}
-          className="flex-shrink-0 m-1.5 p-2.5 bg-blue-600 text-white rounded-xl hover:bg-blue-700 disabled:bg-slate-300 disabled:cursor-not-allowed transition-all active:scale-95"
+          className="flex-shrink-0 m-1 p-2.5 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:bg-slate-300 disabled:cursor-not-allowed transition-all active:scale-95"
           title={t('chat.send')}
         >
           <svg
