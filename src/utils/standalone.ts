@@ -3,31 +3,33 @@
  * @param from - Source of the navigation (e.g., 'sidebar', 'popup')
  * @param sessionId - Optional session ID to restore
  */
-export const openStandalonePage = async (from: string = 'sidebar', sessionId?: string, autoFill: boolean = false) => {
+export const openStandalonePage = async (from: string = 'sidebar', sessionId?: string) => {
   try {
     const response = await chrome.runtime.sendMessage({
       action: 'openStandaloneWindow',
       from,
-      sessionId,
-      autoFill
+      sessionId
     })
 
-    if (response?.success && from === 'sidebar') {
+    if (!response?.success) {
+      console.error('Failed to open standalone window:', response?.error || 'Unknown error')
+      return false
+    }
+
+    if (from === 'sidebar') {
       window.close()
     }
+    return true
   } catch {
-    const params = new URLSearchParams({ from, mode: 'standalone' })
-    if (sessionId) {
-      params.append('sessionId', sessionId)
-    }
-    if (autoFill) {
-      params.append('autoFill', '1')
-    }
+    console.error('Failed to open standalone window')
+    return false
+  }
+}
 
-    chrome.tabs.create({
-      url: chrome.runtime.getURL(`sidepanel.html?${params.toString()}`),
-      active: true
-    })
+export const dockToSidePanel = async () => {
+  const response = await chrome.runtime.sendMessage({ action: 'openDockedSidePanel' })
+  if (!response?.success) {
+    throw new Error(response?.error || '无法打开右侧停靠栏')
   }
 }
 
@@ -39,8 +41,7 @@ export const getUrlParams = () => {
   return {
     from: params.get('from'),
     sessionId: params.get('sessionId'),
-    mode: params.get('mode'),
-    autoFill: params.get('autoFill')
+    mode: params.get('mode')
   }
 }
 

@@ -1,20 +1,44 @@
-import { handleAddExtraInfo, handleRegenerateField, handleUrlBasedFill } from './urlBasedFill'
+import { cancelUrlBasedFill, handleAddExtraInfo, handleRegenerateField, handleUrlBasedFill } from './urlBasedFill'
 import { chatAPI } from '../services/api'
 import { STORAGE_KEYS } from '../config/constants'
 
 const fillableTabActivity = new Map<number, number>()
+const ignoredTargetTabs = new Set<number>()
 let standaloneWindowId: number | null = null
 
 function isFillableUrl(url?: string) {
   return Boolean(url && /^https?:\/\//.test(url))
 }
 
+function isLikelyBrowserErrorTab(tab: chrome.tabs.Tab) {
+  const title = (tab.title || '').toLowerCase()
+  return (
+    title.includes("can't be reached") ||
+    title.includes('can’t be reached') ||
+    title.includes('took too long to respond') ||
+    title.includes('no internet') ||
+    title.includes('dns_probe') ||
+    title.includes('err_') ||
+    title.includes('无法访问此网站') ||
+    title.includes('网页无法打开')
+  )
+}
+
+function canUseAsTargetTab(tab: chrome.tabs.Tab) {
+  return Boolean(
+    tab.id &&
+    isFillableUrl(tab.url) &&
+    !ignoredTargetTabs.has(tab.id) &&
+    !isLikelyBrowserErrorTab(tab)
+  )
+}
+
 async function rememberFillableTab(tabId?: number) {
-  if (!tabId) return
+  if (!tabId || ignoredTargetTabs.has(tabId)) return
 
   try {
     const tab = await chrome.tabs.get(tabId)
-    if (isFillableUrl(tab.url)) {
+    if (canUseAsTargetTab(tab)) {
       fillableTabActivity.set(tab.id || tabId, Date.now())
     }
   } catch (error) {
@@ -29,9 +53,10 @@ async function getTargetTab() {
   for (const [tabId] of candidates) {
     try {
       const tab = await chrome.tabs.get(tabId)
-      if (isFillableUrl(tab.url)) {
+      if (canUseAsTargetTab(tab)) {
         return tab
       }
+      fillableTabActivity.delete(tabId)
     } catch {
       fillableTabActivity.delete(tabId)
     }
@@ -40,7 +65,7 @@ async function getTargetTab() {
   const normalWindows = await chrome.windows.getAll({ populate: true, windowTypes: ['normal'] })
   const activeFillableTabs = normalWindows
     .flatMap((window) => window.tabs || [])
-    .filter((tab) => tab.active && isFillableUrl(tab.url))
+    .filter((tab) => tab.active && canUseAsTargetTab(tab))
 
   const activeTab = activeFillableTabs[activeFillableTabs.length - 1]
   if (activeTab?.id) {
@@ -51,7 +76,12 @@ async function getTargetTab() {
   return null
 }
 
-function getStandaloneUrl(from: string = 'toolbar', sessionId?: string, autoFill: boolean = false) {
+function getStandaloneUrl(
+  from: string = 'toolbar',
+  sessionId?: string,
+  autoFill: boolean = false,
+  targetTabId?: number
+) {
   const params = new URLSearchParams({ from, mode: 'standalone' })
   if (sessionId) {
     params.append('sessionId', sessionId)
@@ -59,7 +89,9 @@ function getStandaloneUrl(from: string = 'toolbar', sessionId?: string, autoFill
   if (autoFill) {
     params.append('autoFill', '1')
   }
-
+  if (targetTabId !== undefined) {
+    params.append('targetTabId', String(targetTabId))
+  }
   return chrome.runtime.getURL(`sidepanel.html?${params.toString()}`)
 }
 
@@ -71,6 +103,19 @@ function isStandaloneExtensionUrl(url?: string) {
   } catch {
     return url.includes('mode=standalone')
   }
+}
+
+function getStandaloneAutoFillUrl(currentUrl: string, targetTabId: number) {
+  const url = new URL(currentUrl)
+  const requestId = `autofill_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`
+  const params = new URLSearchParams({
+    autoFill: '1',
+    targetTabId: String(targetTabId),
+    autoFillRequestId: requestId
+  })
+
+  url.hash = `/chat?${params.toString()}`
+  return url.toString()
 }
 
 async function findStandaloneWindows() {
@@ -97,9 +142,19 @@ async function closeDuplicateStandaloneWindows(keepWindowId: number) {
 }
 
 async function focusStandaloneWindow(windowId: number, anchorWindowId?: number) {
+  // Chromium rejects requesting focus and attention at the same time. Restore a
+  // minimized popup first, then focus and reposition it in a separate update.
+  try {
+    const existingWindow = await chrome.windows.get(windowId)
+    if (existingWindow.state && existingWindow.state !== 'normal') {
+      await chrome.windows.update(windowId, { state: 'normal' })
+    }
+  } catch {
+    // The focused update below reports a useful error when the window is gone.
+  }
+
   await chrome.windows.update(windowId, {
     focused: true,
-    drawAttention: true,
     ...(await getPopupBounds(anchorWindowId))
   })
   standaloneWindowId = windowId
@@ -123,10 +178,25 @@ async function getPopupBounds(anchorWindowId?: number) {
 async function openStandaloneWindow(
   from: string = 'toolbar',
   sessionId?: string,
-  options: { autoFill?: boolean; anchorWindowId?: number } = {}
+  options: { autoFill?: boolean; anchorWindowId?: number; targetTabId?: number } = {}
 ) {
+  const restartExistingWindowForAutoFill = async (windowId: number) => {
+    if (!options.autoFill || options.targetTabId === undefined) return
+
+    const tabs = await chrome.tabs.query({ windowId })
+    const standaloneTab = tabs.find((tab) => isStandaloneExtensionUrl(tab.url))
+    if (!standaloneTab?.id) {
+      throw new Error('没有找到插件窗口页面')
+    }
+
+    await chrome.tabs.update(standaloneTab.id, {
+      url: getStandaloneAutoFillUrl(standaloneTab.url || getStandaloneUrl('floating'), options.targetTabId)
+    })
+  }
+
   if (standaloneWindowId !== null) {
     try {
+      await restartExistingWindowForAutoFill(standaloneWindowId)
       await focusStandaloneWindow(standaloneWindowId, options.anchorWindowId)
       await closeDuplicateStandaloneWindows(standaloneWindowId)
       return
@@ -138,13 +208,14 @@ async function openStandaloneWindow(
   const existingStandaloneWindows = await findStandaloneWindows()
   const existingWindow = existingStandaloneWindows[0]?.window
   if (existingWindow?.id) {
+    await restartExistingWindowForAutoFill(existingWindow.id)
     await closeDuplicateStandaloneWindows(existingWindow.id)
     await focusStandaloneWindow(existingWindow.id, options.anchorWindowId)
     return
   }
 
   const window = await chrome.windows.create({
-    url: getStandaloneUrl(from, sessionId, Boolean(options.autoFill)),
+    url: getStandaloneUrl(from, sessionId, Boolean(options.autoFill), options.targetTabId),
     type: 'popup',
     ...(await getPopupBounds(options.anchorWindowId)),
     focused: true
@@ -205,15 +276,45 @@ Provide a structured summary that can be used to auto-fill forms on other websit
   }
 }
 
-// Open standalone window when extension icon is clicked
-chrome.action.onClicked.addListener((tab) => {
-  if (tab.id) {
-    rememberFillableTab(tab.id)
-    openStandaloneWindow('toolbar', undefined, {
-      autoFill: true,
+async function handleToolbarClick(tab: chrome.tabs.Tab) {
+  try {
+    if (tab.id) {
+      await rememberFillableTab(tab.id)
+    }
+
+    await openStandaloneWindow('toolbar', undefined, {
       anchorWindowId: tab.windowId
     })
+  } catch (error) {
+    console.error('Open toolbar window error:', error)
+    standaloneWindowId = null
+
+    // Some Chromium-based profile browsers can reject popup repositioning. In
+    // that case, reuse the existing popup with the smallest compatible update.
+    const existingWindow = (await findStandaloneWindows().catch(() => []))[0]?.window
+    if (existingWindow?.id) {
+      await chrome.windows.update(existingWindow.id, { state: 'normal' }).catch(() => undefined)
+      await chrome.windows.update(existingWindow.id, { focused: true })
+      standaloneWindowId = existingWindow.id
+      return
+    }
+
+    const fallbackWindow = await chrome.windows.create({
+      url: getStandaloneUrl('toolbar'),
+      type: 'popup',
+      width: 430,
+      height: 780,
+      focused: true
+    })
+    standaloneWindowId = fallbackWindow.id || null
   }
+}
+
+// Open standalone window when extension icon is clicked
+chrome.action.onClicked.addListener((tab) => {
+  void handleToolbarClick(tab).catch((error) => {
+    console.error('Toolbar click recovery failed:', error)
+  })
 })
 
 chrome.tabs.onActivated.addListener((activeInfo) => {
@@ -221,13 +322,14 @@ chrome.tabs.onActivated.addListener((activeInfo) => {
 })
 
 chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
-  if (changeInfo.status === 'complete' && isFillableUrl(tab.url)) {
+  if (changeInfo.status === 'complete' && canUseAsTargetTab(tab)) {
     fillableTabActivity.set(tabId, Date.now())
   }
 })
 
 chrome.tabs.onRemoved.addListener((tabId) => {
   fillableTabActivity.delete(tabId)
+  ignoredTargetTabs.delete(tabId)
 })
 
 chrome.windows.onRemoved.addListener((windowId) => {
@@ -251,7 +353,6 @@ chrome.commands.onCommand.addListener((command) => {
       if (tabs[0]?.id) {
         rememberFillableTab(tabs[0].id)
         openStandaloneWindow('shortcut', undefined, {
-          autoFill: true,
           anchorWindowId: tabs[0].windowId
         })
       }
@@ -268,9 +369,58 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return false
   }
 
+  if (message.action === 'openDockedSidePanel') {
+    getTargetTab().then(async (tab) => {
+      if (!tab?.id) {
+        sendResponse({ success: false, error: '没有找到可停靠的网页。请先打开需要填写的页面。' })
+        return
+      }
+
+      await chrome.sidePanel.setOptions({
+        tabId: tab.id,
+        path: 'sidepanel.html',
+        enabled: true
+      })
+      await chrome.sidePanel.open({ tabId: tab.id })
+      sendResponse({ success: true })
+    }).catch((error) => {
+      console.error('Open docked side panel error:', error)
+      sendResponse({ success: false, error: error.message || '无法打开右侧停靠栏' })
+    })
+    return true
+  }
+
+  if ((message.action === 'startFloatingFill' || message.action === 'openFloatingWindow') && sender.tab?.id) {
+    rememberFillableTab(sender.tab.id)
+    openStandaloneWindow('floating', undefined, {
+      autoFill: true,
+      anchorWindowId: sender.tab.windowId,
+      targetTabId: sender.tab.id
+    }).then(() => {
+      sendResponse({ success: true })
+    }).catch((error) => {
+      console.error('Start floating fill error:', error)
+      sendResponse({ success: false, error: error.message || '无法开始填写' })
+    })
+    return true
+  }
+
   if (message.action === 'rememberFillableTab' && sender.tab?.id) {
     rememberFillableTab(sender.tab.id).then(() => sendResponse({ success: true }))
     return true
+  }
+
+  if (message.action === 'markAutomationTab' && typeof message.tabId === 'number') {
+    ignoredTargetTabs.add(message.tabId)
+    fillableTabActivity.delete(message.tabId)
+    sendResponse({ success: true })
+    return false
+  }
+
+  if (message.action === 'forgetTargetTab' && typeof message.tabId === 'number') {
+    fillableTabActivity.delete(message.tabId)
+    sendResponse({ success: true })
+    return false
   }
 
   // Handle URL-based form fill request
@@ -280,6 +430,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       sendResponse({ success: false, error: 'Internal Error' })
     })
     return true // Indicates async response
+  }
+
+  if (message.action === 'cancelUrlBasedFill' && typeof message.requestId === 'string') {
+    sendResponse({ success: true, cancelled: cancelUrlBasedFill(message.requestId) })
+    return false
   }
 
   if (message.action === 'regenerateField') {
@@ -320,9 +475,30 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true
   }
 
+  if (message.action === 'getTargetTabById' && typeof message.tabId === 'number') {
+    chrome.tabs.get(message.tabId).then((tab) => {
+      if (!canUseAsTargetTab(tab) || !tab.id) {
+        sendResponse({ success: false, error: '当前网页已关闭、无法访问，或不是可填写页面。' })
+        return
+      }
+
+      rememberFillableTab(tab.id)
+      sendResponse({
+        success: true,
+        tab: {
+          id: tab.id,
+          title: tab.title,
+          url: tab.url
+        }
+      })
+    }).catch((error) => {
+      sendResponse({ success: false, error: error.message || '无法获取当前网页标签页' })
+    })
+    return true
+  }
+
   if (message.action === 'openStandaloneWindow') {
     openStandaloneWindow(message.from || 'sidebar', message.sessionId, {
-      autoFill: Boolean(message.autoFill),
       anchorWindowId: sender.tab?.windowId
     }).then(() => {
       sendResponse({ success: true })

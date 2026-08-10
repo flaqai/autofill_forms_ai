@@ -36,6 +36,13 @@ export interface ChatSession {
   updatedAt: Date
 }
 
+export interface CustomProfileField {
+  id: string
+  label: string
+  value: string
+  description?: string
+}
+
 export interface ProductProfile {
   productName: string
   websiteUrl: string
@@ -47,8 +54,10 @@ export interface ProductProfile {
   screenshotImageUrl: string
   promoImageUrl: string
   bannerImageUrl: string
+  galleryImageUrls: string[]
   companyName: string
   companyWebsite: string
+  companyPhone: string
   contactEmail: string
   companyEmail: string
   contactFirstName: string
@@ -62,4 +71,14 @@ export interface ProductProfile {
   tags: string
   extraInfo: string
   lockedFields: string
+  fieldDescriptions: Record<string, string>
+  customFields: CustomProfileField[]
+}
+
+export interface ProductProfileEntry {
+  id: string
+  name: string
+  profile: ProductProfile
+  createdAt: number
+  updatedAt: number
 }

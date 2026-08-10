@@ -1,4 +1,42 @@
+import {
+  completeEvaluationSession,
+  createEvaluationSession,
+  createEvaluationSessionId,
+  readEvaluationSession,
+  recordEvaluationFieldReview,
+  type EvaluationFieldRecord,
+  type EvaluationIssue,
+  type EvaluationPageStatus
+} from '../utils/evaluationLogs'
+import { optimizeImageForInput } from './imageUploadOptimizer'
+
 // Content script for form extraction and filling
+
+interface StoredProductAsset {
+  dataUrl: string
+  fileName: string
+  mimeType: string
+  updatedAt: number
+}
+
+const PRODUCT_ASSET_REFERENCE_PREFIX = 'stored-product-asset://'
+const PRODUCT_ASSET_STORAGE_PREFIX = 'chat4o-product-asset:'
+
+function isStoredAssetReference(
+  value: unknown
+): value is `${typeof PRODUCT_ASSET_REFERENCE_PREFIX}${string}` {
+  return typeof value === 'string' && value.startsWith(PRODUCT_ASSET_REFERENCE_PREFIX)
+}
+
+function assetIdFromReference(value: unknown) {
+  return isStoredAssetReference(value)
+    ? value.slice(PRODUCT_ASSET_REFERENCE_PREFIX.length)
+    : ''
+}
+
+function storedAssetStorageKey(assetId: string) {
+  return `${PRODUCT_ASSET_STORAGE_PREFIX}${assetId}`
+}
 
 interface ExtractedFormField {
   id: string
@@ -36,16 +74,35 @@ interface AssetFillValue {
 interface FilledFieldRecord {
   key: string
   originalValue: string
+  autoFilledValue: string
+  sessionId: string
   field: ExtractedFormField
+  mapping?: FillMapping
   element: HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement | HTMLElement
   control: HTMLDivElement
+}
+
+interface RichTextEditor {
+  setContent?: (content: string) => void
+  getContent?: (options?: { format?: string }) => string
+  save?: () => void
+}
+
+interface RichTextWindow extends Window {
+  tinymce?: {
+    get?: (id: string) => RichTextEditor | undefined
+  }
 }
 
 let lastExtractedFields: ExtractedFormField[] = []
 const filledFieldRecords = new Map<string, FilledFieldRecord>()
 const learnFieldControls = new Map<string, HTMLDivElement>()
+const acceptedFileInputNames = new WeakMap<HTMLInputElement, string[]>()
+let activeEvaluationSessionId = ''
+let evaluationWidget: HTMLDivElement | null = null
 
 let lastActivityReportAt = 0
+let controlRefreshTimer: number | undefined
 
 function reportFillableTabActivity() {
   const now = Date.now()
@@ -57,27 +114,119 @@ function reportFillableTabActivity() {
   })
 }
 
-function getFillableElements() {
-  const elements = Array.from(document.querySelectorAll('input, textarea, select, [role="combobox"]')) as Array<
-    HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement | HTMLElement
-  >
-
-  return elements.filter((el) => {
-    if ('disabled' in el && el.disabled) return false
-
-    if (el instanceof HTMLInputElement) {
-      if (
-        el.type === 'hidden' ||
-        el.type === 'submit' ||
-        el.type === 'button' ||
-        el.type === 'image'
-      ) {
-        return false
-      }
+function isAutofillControlElement(element: HTMLElement) {
+  if (element instanceof HTMLInputElement) {
+    if (
+      element.type === 'hidden' ||
+      element.type === 'submit' ||
+      element.type === 'button' ||
+      element.type === 'image' ||
+      element.type === 'password' ||
+      element.type === 'search'
+    ) {
+      return false
     }
 
-    return true
+    if (element.tabIndex < 0 && element.autocomplete === 'off') return false
+  }
+
+  if ('readOnly' in element && element.readOnly) return false
+
+  const identifier = [
+    element.id,
+    element.getAttribute('name'),
+    element.getAttribute('placeholder'),
+    element.getAttribute('aria-label'),
+    element.getAttribute('title')
+  ].filter(Boolean).join(' ').toLowerCase()
+  const nearbyContainer = element.closest<HTMLElement>('tr, label, [role="group"], .field, .form-group, .control-group')
+  const nearbyText = compactWhitespace(nearbyContainer?.innerText || nearbyContainer?.textContent || '').slice(0, 240).toLowerCase()
+
+  if (/(^|[_\s-])(captcha|recaptcha|verification|verify|otp|auth[\s_-]*code|check[\s_-]*code|security[\s_-]*code|search|query)([_\s-]|$)/.test(identifier)) {
+    return false
+  }
+
+  if (/\b(captcha|validation code|verification code|security code|auth code|enter (?:the )?code shown)\b/.test(nearbyText)) {
+    return false
+  }
+
+  if (/(^|[_\s-])(limit|counter|char[\s_-]*count|max[\s_-]*length)([_\s-]|$)/.test(identifier)) {
+    return false
+  }
+
+  if (/\b(honeypot|honey[\s_-]*pot|spam[\s_-]*trap|website[\s_-]*confirm|url[\s_-]*confirm|site[\s_-]*confirm)\b/.test(identifier)) {
+    return false
+  }
+
+  return true
+}
+
+function submissionFormScore(form: HTMLFormElement) {
+  const fieldIdentity = Array.from(form.querySelectorAll<HTMLElement>('input, textarea, select, [contenteditable], [role="combobox"]'))
+    .map((field) => [
+      field.id,
+      field.getAttribute('name'),
+      field.getAttribute('placeholder'),
+      field.getAttribute('aria-label')
+    ].filter(Boolean).join(' '))
+    .join(' ')
+  const text = compactWhitespace([
+    form.id,
+    form.getAttribute('name'),
+    form.getAttribute('action'),
+    fieldIdentity,
+    textSnippet(form.innerText || form.textContent || '', 1800)
+  ].filter(Boolean).join(' ')).toLowerCase()
+
+  let score = 0
+  if (/\b(title|product name|tool name|startup name|site name|project name|headline)\b/.test(text)) score += 3
+  if (/\b(url|website|homepage|home page|domain|product link|tool link|site link)\b/.test(text)) score += 4
+  if (/\b(description|overview|introduction|details|about|tagline|pitch)\b/.test(text)) score += 4
+  if (/\b(category|categories|industry|tags|keywords)\b/.test(text)) score += 2
+  if (/\b(owner email|your email|contact email|company email|submitter email)\b/.test(text)) score += 1
+  if (/\b(submit|suggest|add|publish|continue|review)\b/.test(text)) score += 1
+  if (/\b(login|log in|sign in|forgot password|remember me)\b/.test(text)) score -= 8
+  if (/\b(search|newsletter|subscribe)\b/.test(text)) score -= 6
+  return score
+}
+
+function keepPrimarySubmissionForms(elements: HTMLElement[]) {
+  const scoredForms = Array.from(new Set(
+    elements.map((element) => element.closest('form')).filter((form): form is HTMLFormElement => form instanceof HTMLFormElement)
+  )).map((form) => ({ form, score: submissionFormScore(form) }))
+  const bestScore = Math.max(0, ...scoredForms.map(({ score }) => score))
+  if (bestScore < 7) return elements
+
+  const allowedForms = new Set(
+    scoredForms
+      .filter(({ score }) => score >= 5 && score >= bestScore - 3)
+      .map(({ form }) => form)
+  )
+
+  return elements.filter((element) => {
+    const form = element.closest('form')
+    return !form || allowedForms.has(form)
   })
+}
+
+function getFillableElements() {
+  const nativeElements = Array.from(document.querySelectorAll('input, textarea, select, [role="combobox"]')) as Array<
+    HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement | HTMLElement
+  >
+  const richTextElements = Array.from(document.querySelectorAll<HTMLElement>('[contenteditable]'))
+    .filter((element) => element.isContentEditable)
+    .filter((element) => {
+      const parentEditor = element.parentElement?.closest<HTMLElement>('[contenteditable]')
+      return !parentEditor || !parentEditor.isContentEditable
+    })
+  const elements = Array.from(new Set([...nativeElements, ...richTextElements]))
+
+  const safeElements = elements.filter((el) => {
+    if ('disabled' in el && el.disabled) return false
+    return isAutofillControlElement(el)
+  })
+
+  return keepPrimarySubmissionForms(safeElements)
 }
 
 function getSelectOptions(element: HTMLElement) {
@@ -87,7 +236,7 @@ function getSelectOptions(element: HTMLElement) {
         label: option.textContent?.trim() || option.label || option.value,
         value: option.value
       }))
-      .filter((option) => option.label && option.value)
+      .filter((option) => option.label)
   }
 
   const controls = element.getAttribute('aria-controls')
@@ -112,6 +261,41 @@ function compactWhitespace(value: string) {
 function textSnippet(value: string | null | undefined, maxLength = 320) {
   const compacted = compactWhitespace(value || '')
   return compacted.length > maxLength ? `${compacted.slice(0, maxLength)}...` : compacted
+}
+
+function isWeakFieldLabel(value: string) {
+  const label = compactWhitespace(value).toLowerCase()
+  return !label ||
+    /^(select|select a value|select value|select an option|choose|choose one|choose an option|please select|-- select --|请选择|选择|选择一个)$/.test(label)
+}
+
+function looksLikeRichTextToolbar(value: string) {
+  const tokens = compactWhitespace(value)
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .split(' ')
+    .filter(Boolean)
+  if (tokens.length === 0 || tokens.length > 18) return false
+
+  const toolbarTokens = new Set([
+    'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
+    'b', 'i', 'u', 's', 'bold', 'italic', 'underline', 'strike',
+    'link', 'quote', 'code', 'bullet', 'ordered', 'unordered', 'list',
+    'align', 'left', 'center', 'right', 'undo', 'redo'
+  ])
+  return tokens.every((token) => toolbarTokens.has(token) || /^h[1-6]$/.test(token))
+}
+
+function isUsableFieldLabel(value: string, element?: HTMLElement) {
+  const label = compactWhitespace(value)
+  if (isWeakFieldLabel(label)) return false
+  if (looksLikeRichTextToolbar(label)) return false
+  if (label.length > 90) return false
+
+  const currentValue = element ? getCurrentValue(element).trim() : ''
+  if (currentValue && label === currentValue) return false
+
+  return /[a-zA-Z\u4e00-\u9fff]/.test(label)
 }
 
 function isScrollable(element: HTMLElement) {
@@ -179,27 +363,29 @@ async function extractFormFields() {
     const isCustomSelect = el.getAttribute('role') === 'combobox' && !(el instanceof HTMLSelectElement)
     const fieldName = el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement || el instanceof HTMLSelectElement
       ? el.name || el.id || `field_${index}`
-      : el.id || `field_${index}`
+      : el.getAttribute('name') || el.id || `field_${index}`
     const fieldType = isCustomSelect
       ? 'select'
       : el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement || el instanceof HTMLSelectElement
         ? el.type || 'text'
-        : 'text'
+        : el.isContentEditable
+          ? 'richtext'
+          : 'text'
     const fieldValue = el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement || el instanceof HTMLSelectElement
       ? el.value || ''
-      : el.textContent?.trim() || ''
+      : getCurrentValue(el)
     const options = isCustomSelect ? await collectCustomSelectOptions(el) : getSelectOptions(el)
     const field = {
       id: el.id || `field_${index}`,
       name: fieldName,
       type: fieldType,
       tagName: el.tagName.toLowerCase(),
-      placeholder: (el as HTMLInputElement).placeholder || '',
-      label: getFieldLabel(el),
+      placeholder: (el as HTMLInputElement).placeholder || el.getAttribute('data-placeholder') || el.getAttribute('aria-placeholder') || '',
+      label: getExtractedFieldLabel(el),
       context: getFieldContext(el),
       maxLength: inferFieldMaxLength(el),
       value: fieldValue,
-      required: (el as HTMLInputElement).required || false,
+      required: (el as HTMLInputElement).required || el.getAttribute('aria-required') === 'true',
       elementIndex: index,
       accept: el instanceof HTMLInputElement && el.type === 'file' ? el.accept : undefined,
       multiple: el instanceof HTMLInputElement && el.type === 'file' ? el.multiple : undefined,
@@ -237,7 +423,99 @@ function getFieldLabel(element: HTMLElement): string {
     return prev.textContent?.trim() || ''
   }
 
+  const tableCell = element.closest('td, th') as HTMLTableCellElement | null
+  const tableRow = element.closest('tr')
+  if (tableCell && tableRow) {
+    const cells = Array.from(tableRow.children).filter(
+      (child): child is HTMLTableCellElement => child instanceof HTMLTableCellElement
+    )
+    const fieldCellIndex = cells.indexOf(tableCell)
+    const labelCell = cells
+      .slice(0, Math.max(fieldCellIndex, 0))
+      .reverse()
+      .find((cell) => compactWhitespace(cell.innerText || cell.textContent || ''))
+    const label = labelCell ? compactWhitespace(labelCell.innerText || labelCell.textContent || '') : ''
+    if (label) return label
+  }
+
   return ''
+}
+
+function getExtractedFieldLabel(element: HTMLElement): string {
+  const explicitLabel = getFieldLabel(element)
+  if (explicitLabel) return explicitLabel
+
+  if (element.isContentEditable || element instanceof HTMLTextAreaElement) {
+    return getVisualLabelAboveField(element) || getNearbyFieldLabel(element)
+  }
+
+  return ''
+}
+
+function getNearbyFieldLabel(element: HTMLElement) {
+  let node: HTMLElement | null = element
+  let depth = 0
+
+  while (node?.parentElement && depth < 5) {
+    let sibling = node.previousElementSibling as HTMLElement | null
+
+    while (sibling) {
+      const candidate = getLastUsableTextLine(sibling.innerText || sibling.textContent || '', element)
+      if (candidate) return candidate
+      sibling = sibling.previousElementSibling as HTMLElement | null
+    }
+
+    const parent: HTMLElement = node.parentElement
+    const parentLabel = parent.getAttribute('aria-label') || parent.getAttribute('data-label') || ''
+    if (isUsableFieldLabel(parentLabel, element)) return compactWhitespace(parentLabel)
+
+    node = parent
+    depth++
+  }
+
+  return ''
+}
+
+function getLastUsableTextLine(value: string, element: HTMLElement) {
+  const lines = value
+    .split(/\r?\n/)
+    .map((line) => compactWhitespace(line))
+    .filter(Boolean)
+
+  for (const line of lines.reverse()) {
+    if (isUsableFieldLabel(line, element)) return line
+  }
+
+  const compacted = compactWhitespace(value)
+  return isUsableFieldLabel(compacted, element) ? compacted : ''
+}
+
+function getVisualLabelAboveField(element: HTMLElement) {
+  const fieldRect = element.getBoundingClientRect()
+  if (fieldRect.width === 0 || fieldRect.height === 0) return ''
+
+  const candidates = Array.from(document.querySelectorAll('label, legend, [aria-label], [data-label], p, span, strong, b, div'))
+    .filter((candidate): candidate is HTMLElement => candidate instanceof HTMLElement && !candidate.contains(element))
+    .map((candidate) => {
+      const rect = candidate.getBoundingClientRect()
+      const label = getLastUsableTextLine(candidate.innerText || candidate.textContent || '', element)
+      const verticalGap = fieldRect.top - rect.bottom
+      const horizontalOverlap = Math.max(0, Math.min(fieldRect.right, rect.right) - Math.max(fieldRect.left, rect.left))
+      return { label, rect, verticalGap, horizontalOverlap }
+    })
+    .filter(({ label, rect, verticalGap, horizontalOverlap }) => (
+      Boolean(label) &&
+      rect.width > 0 &&
+      rect.height > 0 &&
+      verticalGap >= -6 &&
+      verticalGap <= 76 &&
+      horizontalOverlap >= Math.min(28, fieldRect.width * 0.25)
+    ))
+    .sort((left, right) => (
+      left.verticalGap - right.verticalGap || right.horizontalOverlap - left.horizontalOverlap
+    ))
+
+  return candidates[0]?.label || ''
 }
 
 function getAriaDescribedByText(element: HTMLElement) {
@@ -251,11 +529,23 @@ function getAriaDescribedByText(element: HTMLElement) {
     .join(' ')
 }
 
+function getAriaLabelledByText(element: HTMLElement) {
+  const labelledBy = element.getAttribute('aria-labelledby')
+  if (!labelledBy) return ''
+
+  return labelledBy
+    .split(/\s+/)
+    .map((id) => document.getElementById(id)?.textContent || '')
+    .filter(Boolean)
+    .join(' ')
+}
+
 function getFieldContext(element: HTMLElement): string {
   const pieces = [
-    getFieldLabel(element),
+    getExtractedFieldLabel(element),
     (element as HTMLInputElement).placeholder || '',
     element.getAttribute('aria-label') || '',
+    getAriaLabelledByText(element),
     element.getAttribute('title') || '',
     getAriaDescribedByText(element),
     element.previousElementSibling?.textContent || '',
@@ -264,7 +554,9 @@ function getFieldContext(element: HTMLElement): string {
 
   let parent: HTMLElement | null = element.parentElement
   let depth = 0
+  const contextBoundaryTags = new Set(['FORM', 'TABLE', 'TBODY', 'THEAD', 'TFOOT'])
   while (parent && depth < 3) {
+    if (contextBoundaryTags.has(parent.tagName)) break
     const text = textSnippet(parent.innerText || parent.textContent || '', 500)
     if (text) pieces.push(text)
     parent = parent.parentElement
@@ -288,7 +580,10 @@ function inferFieldMaxLength(element: HTMLElement) {
   }
 
   const context = getFieldContext(element)
-  const counterMatches = Array.from(context.matchAll(/(?:^|\D)\d{1,4}\s*\/\s*(\d{1,4})(?:\D|$)/g))
+  const counterMatches = Array.from(
+    context.matchAll(/(?:^|\D)\d{1,4}\s*\/\s*(\d{1,4})\s*(words?|characters?|chars?)?/gi)
+  )
+    .filter((match) => !/^words?$/i.test(match[2] || ''))
     .map((match) => Number(match[1]))
     .filter((value) => value > 0 && value <= 2000)
   if (counterMatches.length > 0) return Math.min(...counterMatches)
@@ -344,6 +639,124 @@ function findElementByKey(key: string) {
   return element
 }
 
+function escapeHtml(value: string) {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;')
+}
+
+function plainTextToRichHtml(value: unknown) {
+  const text = String(value ?? '').replace(/\r\n?/g, '\n').trim()
+  if (!text) return ''
+
+  return text
+    .split(/\n{2,}/)
+    .map((paragraph) => `<p>${escapeHtml(paragraph).replace(/\n/g, '<br>')}</p>`)
+    .join('')
+}
+
+function richTextFrameFor(element: HTMLTextAreaElement) {
+  if (!element.id) return null
+  const frame = document.getElementById(`${element.id}_ifr`)
+  return frame instanceof HTMLIFrameElement ? frame : null
+}
+
+function richTextEditorFor(element: HTMLTextAreaElement) {
+  if (!element.id) return undefined
+  return (window as RichTextWindow).tinymce?.get?.(element.id)
+}
+
+function isRichTextTextarea(element: HTMLTextAreaElement) {
+  return Boolean(richTextEditorFor(element) || richTextFrameFor(element))
+}
+
+function richTextPlainValue(element: HTMLTextAreaElement) {
+  const editor = richTextEditorFor(element)
+  const editorText = editor?.getContent?.({ format: 'text' })?.trim()
+  if (editorText) return editorText
+
+  const frameBody = richTextFrameFor(element)?.contentDocument?.body
+  const frameText = frameBody?.innerText?.trim() || frameBody?.textContent?.trim()
+  if (frameText) return frameText
+
+  const temporary = document.createElement('div')
+  temporary.innerHTML = element.value || ''
+  return temporary.textContent?.trim() || element.value || ''
+}
+
+function dispatchRichTextEvents(element: HTMLTextAreaElement, editorBody?: HTMLElement | null) {
+  editorBody?.dispatchEvent(new Event('input', { bubbles: true }))
+  editorBody?.dispatchEvent(new Event('change', { bubbles: true }))
+  editorBody?.dispatchEvent(new Event('blur', { bubbles: true }))
+  element.dispatchEvent(new Event('input', { bubbles: true }))
+  element.dispatchEvent(new Event('change', { bubbles: true }))
+  element.dispatchEvent(new Event('blur', { bubbles: true }))
+}
+
+function setRichTextValue(element: HTMLTextAreaElement, value: unknown) {
+  if (!isRichTextTextarea(element)) return false
+
+  const html = plainTextToRichHtml(value)
+  const editor = richTextEditorFor(element)
+  let editorUpdated = false
+
+  try {
+    if (editor?.setContent) {
+      editor.setContent(html)
+      editor.save?.()
+      editorUpdated = true
+    }
+  } catch {
+    // The iframe fallback below supports editors whose page API is isolated.
+  }
+
+  const editorBody = richTextFrameFor(element)?.contentDocument?.body
+  if (editorBody) {
+    editorBody.innerHTML = html
+    editorUpdated = true
+  }
+
+  if (!editorUpdated) return false
+
+  setNativeValue(element, html)
+  dispatchRichTextEvents(element, editorBody)
+  return true
+}
+
+function setContentEditableValue(element: HTMLElement, value: unknown) {
+  if (!element.isContentEditable) return false
+
+  const text = String(value ?? '').replace(/\r\n?/g, '\n').trim()
+  const expectedText = compactWhitespace(text)
+
+  try {
+    element.focus()
+    const selection = window.getSelection()
+    const range = document.createRange()
+    range.selectNodeContents(element)
+    selection?.removeAllRanges()
+    selection?.addRange(range)
+    const inserted = document.execCommand('insertText', false, text)
+    if (!inserted || compactWhitespace(element.textContent || '') !== expectedText) {
+      element.innerHTML = plainTextToRichHtml(text)
+    }
+  } catch {
+    element.innerHTML = plainTextToRichHtml(text)
+  }
+
+  element.dispatchEvent(new InputEvent('input', {
+    bubbles: true,
+    inputType: 'insertText',
+    data: text
+  }))
+  element.dispatchEvent(new Event('change', { bubbles: true }))
+  element.dispatchEvent(new Event('blur', { bubbles: true }))
+  return compactWhitespace(element.textContent || '') === expectedText
+}
+
 function setNativeValue(
   element: HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement,
   value: unknown
@@ -389,6 +802,13 @@ function fileNameFromUrl(assetUrl: string, index: number) {
   return fileName || `product-image-${index + 1}.png`
 }
 
+async function storedAssetFromReference(assetUrl: string) {
+  const assetId = assetIdFromReference(assetUrl)
+  const storageKey = storedAssetStorageKey(assetId)
+  const result = await chrome.storage.local.get(storageKey)
+  return result[storageKey] as StoredProductAsset | undefined
+}
+
 function mimeTypeFromFileName(fileName: string) {
   const extension = fileName.split('.').pop()?.toLowerCase()
   if (extension === 'jpg' || extension === 'jpeg') return 'image/jpeg'
@@ -398,17 +818,110 @@ function mimeTypeFromFileName(fileName: string) {
 }
 
 async function fileFromAssetUrl(assetUrl: string, index: number) {
+  const storedAsset = isStoredAssetReference(assetUrl)
+    ? await storedAssetFromReference(assetUrl)
+    : undefined
+
+  if (isStoredAssetReference(assetUrl) && !storedAsset) {
+    throw new Error('Saved product image is no longer available. Please choose it again in Settings.')
+  }
+
   const resolvedUrl = extensionAssetUrl(assetUrl)
-  const response = await fetch(resolvedUrl)
+  const response = await fetch(storedAsset?.dataUrl || resolvedUrl)
   if (!response.ok) {
     throw new Error(`Failed to load asset: ${assetUrl}`)
   }
 
   const blob = await response.blob()
-  const fileName = fileNameFromUrl(assetUrl, index)
+  const fileName = storedAsset?.fileName || fileNameFromUrl(assetUrl, index)
   return new File([blob], fileName, {
-    type: blob.type || mimeTypeFromFileName(fileName)
+    type: storedAsset?.mimeType || blob.type || mimeTypeFromFileName(fileName)
   })
+}
+
+function uploadContainerFor(element: HTMLInputElement) {
+  const labelledControl = element.id
+    ? document.querySelector<HTMLElement>(`label[for="${escapeSelectorValue(element.id)}"]`)
+    : null
+  const uploadContainer = element.closest<HTMLElement>([
+    '[data-testid*="upload" i]',
+    '[data-testid*="drop" i]',
+    '[class*="upload" i]',
+    '[class*="dropzone" i]',
+    '[class*="drop-zone" i]',
+    '[class*="file-input" i]',
+    '[role="button"]'
+  ].join(', '))
+
+  return uploadContainer || labelledControl || element.parentElement || element
+}
+
+function uploadSnapshot(element: HTMLInputElement) {
+  const container = uploadContainerFor(element)
+  const imageSignature = Array.from(container.querySelectorAll<HTMLImageElement>('img'))
+    .map((image) => image.currentSrc || image.src || image.alt)
+    .join('|')
+  const text = compactWhitespace(container.innerText || container.textContent || '')
+  return {
+    childCount: container.querySelectorAll('*').length,
+    imageSignature,
+    text: text.slice(0, 1200)
+  }
+}
+
+function fileNamesFromInput(element: HTMLInputElement) {
+  return Array.from(element.files || []).map((file) => file.name)
+}
+
+function uploadWasAccepted(
+  element: HTMLInputElement,
+  expectedFileNames: string[],
+  before: ReturnType<typeof uploadSnapshot>
+) {
+  const currentFileNames = fileNamesFromInput(element)
+  if (currentFileNames.length > 0) {
+    return expectedFileNames.every((name) => currentFileNames.includes(name))
+  }
+
+  const after = uploadSnapshot(element)
+  const visibleFileName = expectedFileNames.some((name) => (
+    after.text.includes(name) ||
+    after.text.includes(name.replace(/\.[^.]+$/, ''))
+  ))
+  const previewChanged = (
+    after.imageSignature !== before.imageSignature ||
+    after.childCount !== before.childCount
+  )
+
+  return visibleFileName || previewChanged
+}
+
+function assignFiles(element: HTMLInputElement, files: FileList) {
+  const filesSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'files')?.set
+  if (filesSetter) {
+    filesSetter.call(element, files)
+  } else {
+    element.files = files
+  }
+}
+
+function dispatchFileEvents(element: HTMLInputElement) {
+  element.dispatchEvent(new Event('input', { bubbles: true, composed: true }))
+  element.dispatchEvent(new Event('change', { bubbles: true, composed: true }))
+}
+
+function dispatchDropEvents(element: HTMLInputElement, dataTransfer: DataTransfer) {
+  const target = uploadContainerFor(element)
+  if (target === element) return
+
+  for (const type of ['dragenter', 'dragover', 'drop']) {
+    target.dispatchEvent(new DragEvent(type, {
+      bubbles: true,
+      cancelable: true,
+      composed: true,
+      dataTransfer
+    }))
+  }
 }
 
 async function setFileInputValue(element: HTMLInputElement, value: unknown) {
@@ -417,29 +930,69 @@ async function setFileInputValue(element: HTMLInputElement, value: unknown) {
   const assetUrls = element.multiple ? value.assetUrls : value.assetUrls.slice(0, 1)
   if (assetUrls.length === 0) return false
 
+  const before = uploadSnapshot(element)
   const dataTransfer = new DataTransfer()
-  const files = await Promise.all(assetUrls.map((assetUrl, index) => fileFromAssetUrl(assetUrl, index)))
-  files.forEach((file) => dataTransfer.items.add(file))
+  for (const [index, assetUrl] of assetUrls.entries()) {
+    const sourceFile = await fileFromAssetUrl(assetUrl, index)
+    try {
+      const optimized = await optimizeImageForInput(sourceFile, element)
+      dataTransfer.items.add(optimized.file)
+      console.info(`[ImageOptimizer] ${optimized.summary}`)
+    } catch (error) {
+      console.warn('[ImageOptimizer] Could not optimize image; using the original file.', error)
+      dataTransfer.items.add(sourceFile)
+    }
+  }
 
-  element.files = dataTransfer.files
-  element.dispatchEvent(new Event('input', { bubbles: true }))
-  element.dispatchEvent(new Event('change', { bubbles: true }))
-  element.dispatchEvent(new Event('blur', { bubbles: true }))
-  return element.files.length > 0
+  const expectedFileNames = Array.from(dataTransfer.files).map((file) => file.name)
+  assignFiles(element, dataTransfer.files)
+  dispatchFileEvents(element)
+  await wait(420)
+
+  if (!uploadWasAccepted(element, expectedFileNames, before)) {
+    dispatchDropEvents(element, dataTransfer)
+    await wait(520)
+  }
+
+  const accepted = uploadWasAccepted(element, expectedFileNames, before)
+  if (accepted) {
+    acceptedFileInputNames.set(element, expectedFileNames)
+    element.dispatchEvent(new Event('blur', { bubbles: true, composed: true }))
+  } else {
+    acceptedFileInputNames.delete(element)
+    console.warn('[FormFiller] The page did not retain or acknowledge the selected image files.', {
+      field: element.name || element.id,
+      expectedFileNames
+    })
+  }
+
+  return accepted
 }
 
 function shortenToLimit(value: string, maxLength?: number) {
   if (!maxLength || value.length <= maxLength) return value
 
-  const separatorCandidate = value.split(/\s[-|:]\s/)[0]?.trim()
+  const normalizedValue = value.replace(/\s+/g, ' ').trim()
+  const separatorCandidate = normalizedValue.split(/\s[-|:]\s/)[0]?.trim()
   if (separatorCandidate && separatorCandidate.length <= maxLength) return separatorCandidate
 
-  if (maxLength <= 3) return value.slice(0, maxLength)
+  const withinLimit = normalizedValue.slice(0, maxLength).trim()
+  const sentenceEnd = Math.max(
+    withinLimit.lastIndexOf('. '),
+    withinLimit.lastIndexOf('! '),
+    withinLimit.lastIndexOf('? '),
+    /[.!?]$/.test(withinLimit) ? withinLimit.length - 1 : -1
+  )
+  if (sentenceEnd >= Math.min(24, Math.floor(maxLength * 0.45))) {
+    return withinLimit.slice(0, sentenceEnd + 1).trim()
+  }
 
-  const sliced = value.slice(0, maxLength - 3).trim()
-  const wordBoundary = sliced.replace(/\s+\S*$/, '').trim()
-  const base = wordBoundary.length >= Math.floor(maxLength * 0.55) ? wordBoundary : sliced
-  return `${base}...`.slice(0, maxLength)
+  const wordBoundary = withinLimit.replace(/\s+\S*$/, '').trim()
+  return wordBoundary.length >= Math.floor(maxLength * 0.55) ? wordBoundary : withinLimit
+}
+
+function removeTrailingEllipsis(value: string) {
+  return value.replace(/(?:\.\.\.|…)\s*$/, '').trim()
 }
 
 function shouldPreserveExactValue(
@@ -458,7 +1011,7 @@ function constrainValueForField(
   value: unknown
 ) {
   if (typeof value !== 'string' || shouldPreserveExactValue(element, value)) return value
-  return shortenToLimit(value, inferFieldMaxLength(element))
+  return shortenToLimit(removeTrailingEllipsis(value), inferFieldMaxLength(element))
 }
 
 async function applyPostFillLengthLimit(
@@ -555,8 +1108,21 @@ async function setSelectValue(element: HTMLSelectElement | HTMLElement, value: u
   const desiredValue = String(value ?? '')
 
   if (element instanceof HTMLSelectElement) {
-    const bestOption = findBestOption(getSelectOptions(element), desiredValue)
+    const options = getSelectOptions(element)
+    const bestOption = findBestOption(options, desiredValue)
     if (bestOption?.score > 0) {
+      const optionIndex = options.findIndex((option) => (
+        option.value === bestOption.value && option.label === bestOption.label
+      ))
+      const nativeOptions = Array.from(element.options)
+      const nativeOptionIndex = nativeOptions.findIndex((option) => (
+        option.value === bestOption.value &&
+        (option.textContent?.trim() || option.label || option.value) === bestOption.label
+      ))
+
+      // Prefer the actual option index. This also handles the common None
+      // option whose HTML value is an empty string.
+      element.selectedIndex = nativeOptionIndex >= 0 ? nativeOptionIndex : optionIndex
       element.value = bestOption.value
       element.dispatchEvent(new Event('input', { bubbles: true }))
       element.dispatchEvent(new Event('change', { bubbles: true }))
@@ -586,6 +1152,14 @@ async function setFieldValue(
     if (selected) return true
   }
 
+  if (element instanceof HTMLTextAreaElement && setRichTextValue(element, constrainedValue)) {
+    return true
+  }
+
+  if (element.isContentEditable && setContentEditableValue(element, constrainedValue)) {
+    return true
+  }
+
   if (element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement || element instanceof HTMLSelectElement) {
     setNativeValue(element, constrainedValue)
     return true
@@ -596,14 +1170,104 @@ async function setFieldValue(
 
 function getCurrentValue(element: HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement | HTMLElement) {
   if (element instanceof HTMLInputElement && element.type === 'file') {
-    return Array.from(element.files || []).map((file) => file.name).join(', ')
+    const currentNames = fileNamesFromInput(element)
+    return (currentNames.length > 0 ? currentNames : acceptedFileInputNames.get(element) || []).join(', ')
   }
 
   if (element instanceof HTMLInputElement && (element.type === 'checkbox' || element.type === 'radio')) {
     return String(element.checked)
   }
 
+  if (element instanceof HTMLSelectElement) {
+    return element.selectedOptions[0]?.textContent?.trim() || element.value || ''
+  }
+
+  if (element instanceof HTMLTextAreaElement && isRichTextTextarea(element)) {
+    return richTextPlainValue(element)
+  }
+
   return 'value' in element ? element.value || '' : element.textContent?.trim() || ''
+}
+
+function getSelectedRadio(element: HTMLInputElement) {
+  if (!element.name) return element.checked ? element : null
+
+  return Array.from(document.querySelectorAll('input[type="radio"]'))
+    .find((candidate): candidate is HTMLInputElement => (
+      candidate instanceof HTMLInputElement &&
+      candidate.name === element.name &&
+      candidate.checked
+    )) || null
+}
+
+function getLearningValue(element: HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement | HTMLElement) {
+  if (element instanceof HTMLInputElement && element.type === 'radio') {
+    const selected = getSelectedRadio(element)
+    if (!selected) return ''
+    return getFieldLabel(selected) || selected.value || 'Selected'
+  }
+
+  if (element instanceof HTMLInputElement && element.type === 'checkbox') {
+    if (!element.checked) return ''
+    return getFieldLabel(element) || element.value || 'Yes'
+  }
+
+  if (element instanceof HTMLSelectElement) {
+    return element.selectedOptions[0]?.textContent?.trim() || element.value || ''
+  }
+
+  return getCurrentValue(element).trim()
+}
+
+function getLearningFieldLabel(element: HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement | HTMLElement) {
+  const fieldset = element.closest('fieldset')
+  const legend = fieldset?.querySelector('legend')?.textContent?.trim()
+  if (legend && isUsableFieldLabel(legend, element)) return legend
+
+  const radioGroup = element.closest('[role="radiogroup"]')
+  const radioGroupLabel = radioGroup?.getAttribute('aria-labelledby')
+    ?.split(/\s+/)
+    .map((id) => document.getElementById(id)?.textContent?.trim() || '')
+    .filter(Boolean)
+    .join(' ')
+  if (radioGroupLabel && isUsableFieldLabel(radioGroupLabel, element)) return radioGroupLabel
+
+  const directLabel = getFieldLabel(element)
+  if (isUsableFieldLabel(directLabel, element)) return directLabel
+
+  const visualLabel = getVisualLabelAboveField(element)
+  if (visualLabel) return visualLabel
+
+  const nearbyLabel = getNearbyFieldLabel(element)
+  if (nearbyLabel) return nearbyLabel
+
+  const context = getFieldContext(element)
+  const question = context
+    .split('|')
+    .map((part) => compactWhitespace(part))
+    .find((part) => part.includes('?') && isUsableFieldLabel(part, element))
+  const questionEnd = question?.indexOf('?')
+  if (question && questionEnd !== undefined && questionEnd >= 0) {
+    return question.slice(0, questionEnd + 1)
+  }
+
+  const contextLabel = context
+    .split('|')
+    .map((part) => compactWhitespace(part))
+    .find((part) => isUsableFieldLabel(part, element))
+
+  return contextLabel || ''
+}
+
+function getLearningField(key: string) {
+  const element = findElementByKey(key)
+  const field = getFieldForKey(key)
+
+  if (!element) return field
+  return {
+    ...field,
+    label: getLearningFieldLabel(element) || field.label
+  }
 }
 
 function valueLooksFilled(
@@ -618,7 +1282,7 @@ function valueLooksFilled(
   }
 
   if (element instanceof HTMLInputElement && element.type === 'file') {
-    return (element.files?.length || 0) > 0
+    return (element.files?.length || 0) > 0 || acceptedFileInputNames.has(element)
   }
 
   if (!expectedValue) return currentValue.length === 0
@@ -644,8 +1308,8 @@ function isPublicEmailValue(value: unknown) {
 function hasFormalEmailRequirement(element: HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement | HTMLElement) {
   const context = normalizeText(getFieldContext(element))
   return (
-    /\b(company|business|work|official|corporate|professional)\b/.test(context) &&
-    /\b(email|e mail|mail)\b/.test(context)
+    /(company|business|work|official|corporate|professional).{0,32}(email|e mail|mail)/.test(context) ||
+    /(email|e mail|mail).{0,32}(company|business|work|official|corporate|professional)/.test(context)
   ) || /\b(no|not|cannot|can t|must not|don t|do not|invalid)\b.*\b(gmail|free|personal|public|generic)\b/.test(context)
 }
 
@@ -681,7 +1345,9 @@ function getFieldForKey(key: string): ExtractedFormField {
     ? 'select'
     : element && (element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement || element instanceof HTMLSelectElement)
       ? element.type || 'text'
-      : 'text'
+      : element?.isContentEditable
+        ? 'richtext'
+        : 'text'
 
   return {
     ...(existingField || {}),
@@ -701,8 +1367,17 @@ function getFieldForKey(key: string): ExtractedFormField {
   }
 }
 
+function getFieldVisualAnchor(element: HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement | HTMLElement) {
+  if (element instanceof HTMLTextAreaElement) {
+    const richTextFrame = richTextFrameFor(element)
+    if (richTextFrame) return richTextFrame
+  }
+
+  return element
+}
+
 function positionControl(record: FilledFieldRecord) {
-  const rect = record.element.getBoundingClientRect()
+  const rect = getFieldVisualAnchor(record.element).getBoundingClientRect()
   record.control.style.top = `${Math.max(8, rect.top + window.scrollY + 8)}px`
   record.control.style.left = `${Math.max(8, rect.right + window.scrollX - 40)}px`
 }
@@ -713,7 +1388,7 @@ function positionLearnControl(key: string) {
   const element = findElementByKey(key)
   if (!control || !element) return
 
-  const rect = element.getBoundingClientRect()
+  const rect = getFieldVisualAnchor(element).getBoundingClientRect()
   control.style.top = `${Math.max(8, rect.top + window.scrollY + 8)}px`
   control.style.left = `${Math.max(8, rect.right + window.scrollX - 40)}px`
   control.title = `保存到补充资料: ${field.label || field.placeholder || field.name || field.id}`
@@ -723,6 +1398,235 @@ function closeAllMenus() {
   document.querySelectorAll('.chat4o-field-menu').forEach((menu) => {
     menu.remove()
   })
+}
+
+function toEvaluationFieldRecord(
+  key: string,
+  element: HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement | HTMLElement,
+  overrides: Partial<EvaluationFieldRecord> = {}
+): EvaluationFieldRecord {
+  const field = getFieldForKey(key)
+  return {
+    fieldKey: key,
+    id: field.id,
+    name: field.name,
+    label: field.label,
+    context: field.context,
+    placeholder: field.placeholder,
+    tagName: field.tagName,
+    type: field.type,
+    required: field.required,
+    options: field.options || [],
+    originalValue: field.value || '',
+    autoFilledValue: getCurrentValue(element),
+    fillOutcome: 'not_attempted',
+    ...overrides
+  }
+}
+
+async function refreshEvaluationWidget() {
+  if (!evaluationWidget || !activeEvaluationSessionId) return
+  const session = await readEvaluationSession(activeEvaluationSessionId)
+  if (!session) return
+
+  const trigger = evaluationWidget.querySelector<HTMLButtonElement>('[data-evaluation-trigger]')
+  if (!trigger) return
+
+  const correctionCount = session.fields.filter((field) => Boolean(field.review)).length
+  trigger.textContent = session.status === 'pending'
+    ? `验收${correctionCount > 0 ? ` ${correctionCount}` : ''}`
+    : `已验收${correctionCount > 0 ? ` · ${correctionCount}处` : ''}`
+  trigger.style.background = session.status === 'pending' ? '#ffffff' : '#ecfdf5'
+  trigger.style.color = session.status === 'pending' ? '#334155' : '#047857'
+  trigger.style.borderColor = session.status === 'pending' ? '#cbd5e1' : '#a7f3d0'
+}
+
+function createEvaluationPanelButton(
+  label: string,
+  onClick: () => Promise<void>,
+  tone: 'primary' | 'secondary' = 'secondary'
+) {
+  const button = document.createElement('button')
+  button.type = 'button'
+  button.textContent = label
+  button.style.cssText = `
+    width: 100%;
+    padding: 8px 10px;
+    border: 1px solid ${tone === 'primary' ? '#2563eb' : '#dbe3ef'};
+    border-radius: 7px;
+    background: ${tone === 'primary' ? '#2563eb' : '#ffffff'};
+    color: ${tone === 'primary' ? '#ffffff' : '#475569'};
+    font-size: 12px;
+    font-weight: 600;
+    text-align: left;
+    cursor: pointer;
+  `
+  button.addEventListener('click', (event) => {
+    event.preventDefault()
+    event.stopPropagation()
+    void onClick()
+  })
+  return button
+}
+
+function showEvaluationPanel() {
+  if (!evaluationWidget || !activeEvaluationSessionId) return
+  evaluationWidget.querySelector('.chat4o-evaluation-panel')?.remove()
+
+  const panel = document.createElement('div')
+  panel.className = 'chat4o-evaluation-panel'
+  panel.style.cssText = `
+    position: absolute;
+    left: 0;
+    bottom: 42px;
+    width: 238px;
+    padding: 10px;
+    border: 1px solid #dbe3ef;
+    border-radius: 10px;
+    background: #ffffff;
+    box-shadow: 0 14px 35px rgba(15, 23, 42, 0.22);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  `
+
+  const heading = document.createElement('div')
+  heading.textContent = '本页填写验收'
+  heading.style.cssText = 'margin-bottom:4px;color:#0f172a;font-size:13px;font-weight:700;'
+  const help = document.createElement('div')
+  help.textContent = '错误字段先在输入框中改好，再点旁边 AI → 记录这次改正。'
+  help.style.cssText = 'margin-bottom:9px;color:#64748b;font-size:11px;line-height:1.45;'
+
+  const finish = createEvaluationPanelButton('本页检查完成，其余字段正确', async () => {
+    await completeEvaluationSession(activeEvaluationSessionId, 'accepted', true)
+    panel.remove()
+    await refreshEvaluationWidget()
+  }, 'primary')
+
+  const divider = document.createElement('div')
+  divider.textContent = '页面本身有问题'
+  divider.style.cssText = 'margin:10px 0 6px;color:#94a3b8;font-size:10px;'
+
+  const pageStatuses: Array<{ label: string; status: Exclude<EvaluationPageStatus, 'pending'> }> = [
+    { label: '这不是提交页面', status: 'not_submission_page' },
+    { label: '需要登录或验证码', status: 'authentication_required' },
+    { label: '页面打不开或已失效', status: 'page_unavailable' }
+  ]
+
+  const statusButtons = document.createElement('div')
+  statusButtons.style.cssText = 'display:grid;gap:5px;'
+  pageStatuses.forEach(({ label, status }) => {
+    statusButtons.appendChild(createEvaluationPanelButton(label, async () => {
+      await completeEvaluationSession(activeEvaluationSessionId, status)
+      panel.remove()
+      await refreshEvaluationWidget()
+    }))
+  })
+
+  panel.append(heading, help, finish, divider, statusButtons)
+  evaluationWidget.appendChild(panel)
+}
+
+function ensureEvaluationWidget(sessionId: string) {
+  activeEvaluationSessionId = sessionId
+
+  if (!evaluationWidget?.isConnected) {
+    evaluationWidget = document.createElement('div')
+    evaluationWidget.style.cssText = `
+      position: fixed;
+      left: 12px;
+      bottom: 12px;
+      z-index: 2147483647;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    `
+
+    const trigger = document.createElement('button')
+    trigger.type = 'button'
+    trigger.dataset.evaluationTrigger = 'true'
+    trigger.textContent = '验收'
+    trigger.title = '检查并记录本页自动填写结果'
+    trigger.style.cssText = `
+      min-width: 62px;
+      height: 34px;
+      padding: 0 12px;
+      border: 1px solid #cbd5e1;
+      border-radius: 8px;
+      background: #ffffff;
+      color: #334155;
+      font-size: 12px;
+      font-weight: 700;
+      box-shadow: 0 8px 20px rgba(15, 23, 42, 0.16);
+      cursor: pointer;
+    `
+    trigger.addEventListener('click', (event) => {
+      event.preventDefault()
+      event.stopPropagation()
+      const existingPanel = evaluationWidget?.querySelector('.chat4o-evaluation-panel')
+      if (existingPanel) {
+        existingPanel.remove()
+      } else {
+        showEvaluationPanel()
+      }
+    })
+
+    evaluationWidget.appendChild(trigger)
+    document.documentElement.appendChild(evaluationWidget)
+  }
+
+  void refreshEvaluationWidget()
+}
+
+function markEvaluationControlRecorded(record: FilledFieldRecord) {
+  record.control.textContent = '✓'
+  record.control.style.background = '#16a34a'
+  record.control.title = '这处人工纠正已记录'
+}
+
+function inferCorrectionIssue(record: FilledFieldRecord): EvaluationIssue {
+  const field = getFieldForKey(record.key)
+  if (
+    record.element instanceof HTMLSelectElement ||
+    record.element.getAttribute('role') === 'combobox' ||
+    field.type === 'select'
+  ) {
+    return 'wrong_option'
+  }
+
+  if (field.maxLength && record.autoFilledValue.length > field.maxLength) {
+    return 'length_limit'
+  }
+
+  return 'wrong_value'
+}
+
+async function recordFilledFieldReview(
+  record: FilledFieldRecord,
+  issue: EvaluationIssue,
+  correctedValue?: string,
+  note?: string
+) {
+  const saved = await recordEvaluationFieldReview(
+    record.sessionId,
+    toEvaluationFieldRecord(record.key, record.element, {
+      originalValue: record.originalValue,
+      autoFilledValue: record.autoFilledValue,
+      source: record.mapping?.source,
+      confidence: record.mapping?.confidence,
+      reason: record.mapping?.reason,
+      fillOutcome: 'filled'
+    }),
+    {
+      issue,
+      correctedValue,
+      note,
+      reviewedAt: new Date().toISOString()
+    }
+  )
+
+  if (saved) {
+    markEvaluationControlRecorded(record)
+    await refreshEvaluationWidget()
+  } else {
+    showFieldControlResult(record.control, false)
+  }
 }
 
 function createMenuButton(label: string, onClick: () => void) {
@@ -753,6 +1657,15 @@ function createMenuButton(label: string, onClick: () => void) {
     onClick()
   })
   return button
+}
+
+function showFieldControlResult(control: HTMLDivElement, success: boolean) {
+  control.textContent = success ? '✓' : '!'
+  control.style.background = success ? '#16a34a' : '#dc2626'
+  window.setTimeout(() => {
+    control.textContent = 'AI'
+    control.style.background = '#2563eb'
+  }, 1200)
 }
 
 function showFieldMenu(record: FilledFieldRecord) {
@@ -799,13 +1712,72 @@ function showFieldMenu(record: FilledFieldRecord) {
     await setFieldValue(record.element, record.originalValue)
   })
 
-  const clearButton = createMenuButton('清空', async () => {
+  const recordCorrectionButton = createMenuButton('记录这次改正', async () => {
+    const correctedValue = getLearningValue(record.element)
+    if (correctedValue === record.autoFilledValue) {
+      record.control.title = '请先在输入框中改正内容，再记录'
+      showFieldControlResult(record.control, false)
+      return
+    }
+
+    record.control.textContent = '...'
+    await recordFilledFieldReview(record, inferCorrectionIssue(record), correctedValue)
+  })
+
+  const shouldBeEmptyButton = createMenuButton('本应留空', async () => {
+    record.control.textContent = '...'
     await setFieldValue(record.element, '')
+    await recordFilledFieldReview(record, 'should_be_empty', '')
+  })
+
+  const unresolvedButton = createMenuButton('标记仍未解决', async () => {
+    record.control.textContent = '...'
+    await recordFilledFieldReview(
+      record,
+      'unresolved',
+      undefined,
+      'The reviewer marked this field as incorrect but did not provide a corrected value.'
+    )
+  })
+
+  const learnButton = createMenuButton('学习到资料', async () => {
+    const value = getLearningValue(record.element)
+    if (!value) {
+      showFieldControlResult(record.control, false)
+      return
+    }
+
+    record.control.textContent = '...'
+    try {
+      const response = await chrome.runtime.sendMessage({
+        action: 'addExtraInfo',
+        data: {
+          field: getLearningField(record.key),
+          value,
+          pageUrl: window.location.href
+        }
+      })
+      if (response?.success && value !== record.autoFilledValue) {
+        await recordFilledFieldReview(
+          record,
+          inferCorrectionIssue(record),
+          value,
+          'Saved to the product profile.'
+        )
+      } else {
+        showFieldControlResult(record.control, Boolean(response?.success))
+      }
+    } catch {
+      showFieldControlResult(record.control, false)
+    }
   })
 
   menu.appendChild(regenerateButton)
   menu.appendChild(restoreButton)
-  menu.appendChild(clearButton)
+  menu.appendChild(recordCorrectionButton)
+  menu.appendChild(shouldBeEmptyButton)
+  menu.appendChild(unresolvedButton)
+  menu.appendChild(learnButton)
 
   const rect = record.control.getBoundingClientRect()
   menu.style.top = `${rect.bottom + window.scrollY + 6}px`
@@ -816,10 +1788,26 @@ function showFieldMenu(record: FilledFieldRecord) {
 function attachFieldControl(
   key: string,
   element: HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement | HTMLElement,
-  mapping?: FillMapping
+  mapping: FillMapping | undefined,
+  sessionId: string,
+  originalValue: string,
+  autoFilledValue: string
 ) {
   const existingRecord = filledFieldRecords.get(key)
   if (existingRecord) {
+    // Framework-driven forms may replace an input after its value changes.
+    // Keep the existing button but re-anchor it to the current DOM node.
+    existingRecord.element = element
+    existingRecord.field = getFieldForKey(key)
+    existingRecord.mapping = mapping
+    existingRecord.sessionId = sessionId
+    existingRecord.originalValue = originalValue
+    existingRecord.autoFilledValue = autoFilledValue
+    existingRecord.control.textContent = 'AI'
+    existingRecord.control.style.background = '#2563eb'
+    if (!existingRecord.control.isConnected) {
+      document.documentElement.appendChild(existingRecord.control)
+    }
     positionControl(existingRecord)
     return
   }
@@ -846,8 +1834,11 @@ function attachFieldControl(
 
   const record: FilledFieldRecord = {
     key,
-    originalValue: getFieldForKey(key).value,
+    originalValue,
+    autoFilledValue,
+    sessionId,
     field: getFieldForKey(key),
+    mapping,
     element,
     control
   }
@@ -866,6 +1857,47 @@ function attachFieldControl(
 function updateAllControlPositions() {
   filledFieldRecords.forEach((record) => positionControl(record))
   learnFieldControls.forEach((_control, key) => positionLearnControl(key))
+}
+
+function refreshFieldControlsAfterPageUpdate() {
+  filledFieldRecords.forEach((record, key) => {
+    const currentElement = findElementByKey(key)
+    if (!currentElement) {
+      if (!record.element.isConnected) {
+        record.control.remove()
+        filledFieldRecords.delete(key)
+      }
+      return
+    }
+
+    record.element = currentElement
+    record.field = getFieldForKey(key)
+    if (!record.control.isConnected) {
+      document.documentElement.appendChild(record.control)
+    }
+    positionControl(record)
+  })
+
+  learnFieldControls.forEach((control, key) => {
+    const currentElement = findElementByKey(key)
+    if (!currentElement) {
+      control.remove()
+      learnFieldControls.delete(key)
+      return
+    }
+
+    if (!control.isConnected) {
+      document.documentElement.appendChild(control)
+    }
+    positionLearnControl(key)
+  })
+}
+
+function scheduleFieldControlRefresh() {
+  window.clearTimeout(controlRefreshTimer)
+  controlRefreshTimer = window.setTimeout(() => {
+    refreshFieldControlsAfterPageUpdate()
+  }, 120)
 }
 
 function showTemporaryButtonState(control: HTMLDivElement, text: string, color: string) {
@@ -907,7 +1939,7 @@ function attachLearnControl(key: string) {
     event.stopPropagation()
 
     const currentElement = findElementByKey(key)
-    const value = currentElement ? getCurrentValue(currentElement).trim() : ''
+    const value = currentElement ? getLearningValue(currentElement) : ''
     if (!value) {
       showTemporaryButtonState(control, '!', '#dc2626')
       return
@@ -915,16 +1947,36 @@ function attachLearnControl(key: string) {
 
     control.textContent = '...'
     try {
+      const learningField = getLearningField(key)
       const response = await chrome.runtime.sendMessage({
         action: 'addExtraInfo',
         data: {
-          field: getFieldForKey(key),
+          field: learningField,
           value,
           pageUrl: window.location.href
         }
       })
 
       if (response?.success) {
+        if (activeEvaluationSessionId && currentElement) {
+          await recordEvaluationFieldReview(
+            activeEvaluationSessionId,
+            toEvaluationFieldRecord(key, currentElement, {
+              label: learningField.label,
+              context: learningField.context,
+              originalValue: '',
+              autoFilledValue: '',
+              fillOutcome: 'not_attempted'
+            }),
+            {
+              issue: 'missed_field',
+              correctedValue: value,
+              note: 'The reviewer manually completed an omitted field and saved it to the product profile.',
+              reviewedAt: new Date().toISOString()
+            }
+          )
+          await refreshEvaluationWidget()
+        }
         showTemporaryButtonState(control, '✓', '#16a34a')
       } else {
         showTemporaryButtonState(control, '!', '#dc2626')
@@ -954,6 +2006,13 @@ document.addEventListener('pointerdown', reportFillableTabActivity, true)
 document.addEventListener('visibilitychange', () => {
   if (!document.hidden) reportFillableTabActivity()
 })
+
+const controlObserver = new MutationObserver(() => {
+  if (filledFieldRecords.size > 0 || learnFieldControls.size > 0) {
+    scheduleFieldControlRefresh()
+  }
+})
+controlObserver.observe(document.documentElement, { childList: true, subtree: true })
 reportFillableTabActivity()
 
 // Fill form fields with provided data
@@ -964,6 +2023,9 @@ async function fillForm(
 ) {
   console.log('[FormFiller] Filling form with data:', data)
 
+  const evaluationSessionId = createEvaluationSessionId()
+  activeEvaluationSessionId = evaluationSessionId
+  const evaluationFields: EvaluationFieldRecord[] = []
   let filledCount = 0
   const failedKeys: string[] = []
   const filledKeys = new Set<string>()
@@ -973,6 +2035,7 @@ async function fillForm(
     const element = findElementByKey(key)
 
     if (element) {
+      const originalValue = getCurrentValue(element)
       const filled = await setFieldValue(element, value)
       await wait(180)
       const lengthLimitedValue = await applyPostFillLengthLimit(element, value)
@@ -984,10 +2047,8 @@ async function fillForm(
         fallbackValue &&
         String(fallbackValue) !== String(value) &&
         isEmailValue(fallbackValue) &&
-        (
-          !verified ||
-          (isPublicEmailValue(value) && (hasFormalEmailRequirement(element) || hasPublicEmailRejection(element)))
-        )
+        isPublicEmailValue(value) &&
+        (hasFormalEmailRequirement(element) || hasPublicEmailRejection(element))
       ) {
         const fallbackFilled = await setFieldValue(element, fallbackValue)
         await wait(120)
@@ -1002,11 +2063,36 @@ async function fillForm(
         if (finalValue !== value) {
           data[key] = finalValue
         }
-        attachFieldControl(key, element, mappingByFieldId.get(key))
+        const mapping = mappingByFieldId.get(key)
+        attachFieldControl(
+          key,
+          element,
+          mapping,
+          evaluationSessionId,
+          originalValue,
+          String(finalValue)
+        )
+        evaluationFields.push(toEvaluationFieldRecord(key, element, {
+          originalValue,
+          autoFilledValue: String(finalValue),
+          source: mapping?.source,
+          confidence: mapping?.confidence,
+          reason: mapping?.reason,
+          fillOutcome: 'filled'
+        }))
         filledKeys.add(key)
         filledCount++
         console.log(`[FormFiller] Filled field: ${key} = ${finalValue}`)
       } else {
+        const mapping = mappingByFieldId.get(key)
+        evaluationFields.push(toEvaluationFieldRecord(key, element, {
+          originalValue,
+          autoFilledValue: getCurrentValue(element),
+          source: mapping?.source,
+          confidence: mapping?.confidence,
+          reason: mapping?.reason,
+          fillOutcome: 'failed'
+        }))
         failedKeys.push(key)
       }
     } else {
@@ -1015,6 +2101,24 @@ async function fillForm(
   }
 
   attachLearnControlsForUnfilledFields(filledKeys)
+  scheduleFieldControlRefresh()
+  window.setTimeout(refreshFieldControlsAfterPageUpdate, 650)
+  window.setTimeout(refreshFieldControlsAfterPageUpdate, 1600)
+
+  try {
+    await createEvaluationSession({
+      id: evaluationSessionId,
+      url: window.location.href,
+      title: document.title,
+      filledCount,
+      attemptedCount: Object.keys(data).length,
+      failedKeys,
+      fields: evaluationFields
+    })
+    ensureEvaluationWidget(evaluationSessionId)
+  } catch (error) {
+    console.warn('[FormFiller] Could not save evaluation session:', error)
+  }
 
   console.log(`[FormFiller] Filled ${filledCount} fields`)
   return {

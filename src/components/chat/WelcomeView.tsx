@@ -1,4 +1,5 @@
 import { useTranslation } from 'react-i18next'
+import { useNavigate } from 'react-router-dom'
 import { openStandalonePage } from '@/utils/standalone'
 
 interface WelcomeViewProps {
@@ -45,6 +46,7 @@ const ActionItem = ({ icon, title, description, onClick }: ActionItemProps) => (
 
 export const WelcomeView = ({ onFormFillClick }: WelcomeViewProps) => {
   const { t } = useTranslation()
+  const navigate = useNavigate()
 
   const handleFullscreenClick = () => {
     openStandalonePage('sidebar')
@@ -80,6 +82,12 @@ export const WelcomeView = ({ onFormFillClick }: WelcomeViewProps) => {
               title="填充表单"
               description="使用推广资料智能匹配表单字段"
               onClick={onFormFillClick}
+            />
+            <ActionItem
+              icon="▦"
+              title="批量提交"
+              description="批量打开网站,自动寻找提交页并填写"
+              onClick={() => navigate('/batch')}
             />
           </div>
         </div>

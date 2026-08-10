@@ -37,8 +37,10 @@
         "activeTab",
         "storage",
         "tabs",
+        "webNavigation",
         "scripting",
-        "sidePanel"
+        "sidePanel",
+        "unlimitedStorage"
     ],
     "host_permissions": [
         "<all_urls>"

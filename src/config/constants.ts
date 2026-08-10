@@ -33,6 +33,7 @@ export const SUPPORTED_LANGUAGES = [
 // Storage Keys
 export const STORAGE_KEYS = {
   SETTINGS: 'chat4o-settings',
+  CHAT_HISTORY: 'chat4o-chat-history',
   LANGUAGE: 'chat4o-language'
 } as const
 

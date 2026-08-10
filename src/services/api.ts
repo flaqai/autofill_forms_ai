@@ -62,6 +62,7 @@ interface SendMessageOptions {
   temperature?: number
   maxTokens?: number
   enableWebSearch?: boolean
+  signal?: AbortSignal
 }
 
 class ChatAPI {
@@ -129,21 +130,23 @@ class ChatAPI {
       model = this.defaultModel,
       temperature = this.defaultTemperature,
       maxTokens,
-      enableWebSearch = false
+      enableWebSearch = false,
+      signal
     } = options
 
     // Check if using Gemini model
     if (this.isGeminiModel(model)) {
-      return this.sendGeminiMessage(messages, model, temperature, maxTokens, enableWebSearch)
+      return this.sendGeminiMessage(messages, model, temperature, maxTokens, enableWebSearch, signal)
     } else {
-      return this.sendOpenAIMessage(messages, model, temperature)
+      return this.sendOpenAIMessage(messages, model, temperature, signal)
     }
   }
 
   private async sendOpenAIMessage(
     messages: Message[],
     model: string,
-    temperature: number
+    temperature: number,
+    signal?: AbortSignal
   ): Promise<string> {
     const data = await this.client
       .post('chat/completions', {
@@ -154,7 +157,8 @@ class ChatAPI {
             content: msg.content
           })),
           temperature
-        } as ChatCompletionRequest
+        } as ChatCompletionRequest,
+        signal
       })
       .json<ChatCompletionResponse>()
 
@@ -166,7 +170,8 @@ class ChatAPI {
     model: string,
     temperature: number,
     maxTokens?: number,
-    enableWebSearch?: boolean
+    enableWebSearch?: boolean,
+    signal?: AbortSignal
   ): Promise<string> {
     // Convert OpenAI format to Gemini format
     const contents: GeminiRequest['contents'] = []
@@ -220,7 +225,8 @@ class ChatAPI {
 
     const data = await this.client
       .post(endpoint, {
-        json: requestBody
+        json: requestBody,
+        signal
       })
       .json<GeminiResponse>()
 

@@ -1,7 +1,10 @@
 import { create } from 'zustand'
 import { immer } from 'zustand/middleware/immer'
+import { createJSONStorage, persist } from 'zustand/middleware'
 import { chatAPI } from '@/services/api'
 import i18n from '@/i18n'
+import { STORAGE_KEYS } from '@/config/constants'
+import { chromeStorage } from './chromeStorage'
 import type { Message, ChatSession } from '@/types'
 
 interface CreateSessionOptions {
@@ -29,6 +32,7 @@ interface ChatState {
 
   // UI state
   isLoading: boolean
+  hasHydrated: boolean
 
   // Actions
   sendMessage: (params: SendMessageParams) => Promise<void>
@@ -39,18 +43,27 @@ interface ChatState {
   getCurrentMessages: () => Message[]
   deleteSession: (sessionId: string) => void
   updateSessionTitle: (sessionId: string, title: string) => void
+  setHasHydrated: (hasHydrated: boolean) => void
 }
 
 const generateMessageId = () => `msg_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`
 const generateSessionId = () => `session_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`
 
 export const useChatStore = create<ChatState>()(
-  immer((set, get) => ({
-    currentSessionId: null,
-    sessions: [],
-    isLoading: false,
+  persist(
+    immer((set, get) => ({
+      currentSessionId: null,
+      sessions: [],
+      isLoading: false,
+      hasHydrated: false,
 
-    createSession: (options) => {
+      setHasHydrated: (hasHydrated) => {
+        set((state) => {
+          state.hasHydrated = hasHydrated
+        })
+      },
+
+      createSession: (options) => {
       const {
         title,
         initialMessage,
@@ -85,24 +98,24 @@ export const useChatStore = create<ChatState>()(
       })
 
       return sessionId
-    },
+      },
 
-    setCurrentSession: (sessionId) => {
+      setCurrentSession: (sessionId) => {
       set((state) => {
         state.currentSessionId = sessionId
       })
-    },
+      },
 
-    deleteSession: (sessionId) => {
+      deleteSession: (sessionId) => {
       set((state) => {
         state.sessions = state.sessions.filter((s) => s.id !== sessionId)
         if (state.currentSessionId === sessionId) {
           state.currentSessionId = state.sessions[0]?.id || null
         }
       })
-    },
+      },
 
-    updateSessionTitle: (sessionId, title) => {
+      updateSessionTitle: (sessionId, title) => {
       set((state) => {
         const session = state.sessions.find((s) => s.id === sessionId)
         if (session) {
@@ -110,9 +123,9 @@ export const useChatStore = create<ChatState>()(
           session.updatedAt = new Date()
         }
       })
-    },
+      },
 
-    addMessage: (sessionId, message) => {
+      addMessage: (sessionId, message) => {
       set((state) => {
         const session = state.sessions.find((s) => s.id === sessionId)
         if (session) {
@@ -120,9 +133,9 @@ export const useChatStore = create<ChatState>()(
           session.updatedAt = new Date()
         }
       })
-    },
+      },
 
-    updateMessage: (sessionId, messageId, updates) => {
+      updateMessage: (sessionId, messageId, updates) => {
       set((state) => {
         const session = state.sessions.find((s) => s.id === sessionId)
         if (session) {
@@ -133,15 +146,15 @@ export const useChatStore = create<ChatState>()(
           }
         }
       })
-    },
+      },
 
-    getCurrentMessages: () => {
+      getCurrentMessages: () => {
       const state = get()
       const session = state.sessions.find((s) => s.id === state.currentSessionId)
       return session?.messages || []
-    },
+      },
 
-    sendMessage: async (params) => {
+      sendMessage: async (params) => {
       const { content, apiOptions, sessionOptions } = params
       const state = get()
 
@@ -196,6 +209,18 @@ export const useChatStore = create<ChatState>()(
           state.isLoading = false
         })
       }
+      }
+    })),
+    {
+      name: STORAGE_KEYS.CHAT_HISTORY,
+      storage: createJSONStorage(() => chromeStorage),
+      partialize: (state) => ({
+        currentSessionId: state.currentSessionId,
+        sessions: state.sessions
+      }),
+      onRehydrateStorage: () => (state) => {
+        state?.setHasHydrated(true)
+      }
     }
-  }))
+  )
 )
