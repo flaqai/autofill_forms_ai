@@ -80,6 +80,38 @@ interface ProductFieldLayoutTemplate {
   hidden: string[]
 }
 
+interface FullStorageBackup {
+  type: 'chat4o-full-storage-backup'
+  version: 1
+  exportedAt: string
+  storage: Record<string, unknown>
+}
+
+function downloadJsonFile(filename: string, value: unknown) {
+  const blob = new Blob([JSON.stringify(value, null, 2)], { type: 'application/json' })
+  const url = URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  link.href = url
+  link.download = filename
+  link.click()
+  window.setTimeout(() => URL.revokeObjectURL(url), 0)
+}
+
+function parseFullStorageBackup(raw: string): FullStorageBackup {
+  const parsed = JSON.parse(raw) as Partial<FullStorageBackup>
+  if (
+    parsed.type !== 'chat4o-full-storage-backup' ||
+    parsed.version !== 1 ||
+    !parsed.storage ||
+    typeof parsed.storage !== 'object' ||
+    Array.isArray(parsed.storage)
+  ) {
+    throw new Error('这不是 Chat4o AI 的完整备份文件')
+  }
+
+  return parsed as FullStorageBackup
+}
+
 function customFieldLayoutId(id: string) {
   return `${CUSTOM_FIELD_PREFIX}${id}`
 }
@@ -352,7 +384,9 @@ export const SettingsPanel = () => {
   const galleryInputRefs = useRef<Array<HTMLInputElement | null>>([])
   const packageJsonInputRef = useRef<HTMLInputElement | null>(null)
   const packageFolderInputRef = useRef<HTMLInputElement | null>(null)
+  const fullBackupInputRef = useRef<HTMLInputElement | null>(null)
   const [importingPackage, setImportingPackage] = useState(false)
+  const [restoringFullBackup, setRestoringFullBackup] = useState(false)
   const [packageImportStatus, setPackageImportStatus] = useState<{
     kind: 'success' | 'error'
     message: string
@@ -438,12 +472,7 @@ export const SettingsPanel = () => {
     return () => {
       cancelled = true
     }
-  }, [
-    localProductProfile.logoImageUrl,
-    localProductProfile.screenshotImageUrl,
-    localProductProfile.promoImageUrl,
-    localProductProfile.bannerImageUrl
-  ])
+  }, [localProductProfile])
 
   useEffect(() => {
     let cancelled = false
@@ -976,6 +1005,60 @@ export const SettingsPanel = () => {
     }
   }
 
+  const exportFullBackup = async () => {
+    if (typeof chrome === 'undefined' || !chrome.storage?.local) {
+      setPackageImportStatus({ kind: 'error', message: '当前浏览器不支持完整备份' })
+      return
+    }
+
+    try {
+      const storage = await chrome.storage.local.get(null)
+      const backup: FullStorageBackup = {
+        type: 'chat4o-full-storage-backup',
+        version: 1,
+        exportedAt: new Date().toISOString(),
+        storage
+      }
+      const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)
+      downloadJsonFile(`chat4o-backup-${timestamp}.json`, backup)
+      setPackageImportStatus({ kind: 'success', message: '完整备份已导出，请妥善保管该私密文件' })
+    } catch (error) {
+      console.error('[SettingsPanel] Failed to export full backup', error)
+      setPackageImportStatus({ kind: 'error', message: '完整备份导出失败，请重试' })
+    }
+  }
+
+  const importFullBackup = async (files?: FileList | null) => {
+    const file = files?.[0]
+    if (!file || restoringFullBackup) return
+    if (file.size > 50 * 1024 * 1024) {
+      setPackageImportStatus({ kind: 'error', message: '备份文件超过 50MB，无法导入' })
+      return
+    }
+    if (typeof chrome === 'undefined' || !chrome.storage?.local) {
+      setPackageImportStatus({ kind: 'error', message: '当前浏览器不支持完整备份' })
+      return
+    }
+
+    setRestoringFullBackup(true)
+    setPackageImportStatus(null)
+    try {
+      const backup = parseFullStorageBackup(await file.text())
+      await chrome.storage.local.set(backup.storage)
+      setPackageImportStatus({ kind: 'success', message: '完整备份已导入，正在刷新资料' })
+      window.setTimeout(() => window.location.reload(), 300)
+    } catch (error) {
+      console.error('[SettingsPanel] Failed to import full backup', error)
+      setPackageImportStatus({
+        kind: 'error',
+        message: error instanceof Error ? error.message : '完整备份导入失败'
+      })
+    } finally {
+      setRestoringFullBackup(false)
+      if (fullBackupInputRef.current) fullBackupInputRef.current.value = ''
+    }
+  }
+
   const saveProductProfileName = () => {
     const name = profileNameDraft.trim()
     if (!name) return
@@ -1360,6 +1443,33 @@ export const SettingsPanel = () => {
             className="h-9 flex-1 rounded-md bg-blue-600 px-3 text-xs font-medium text-white hover:bg-blue-700 disabled:opacity-50"
           >
             导入推广包文件夹
+          </button>
+        </div>
+
+        <div className="flex gap-2">
+          <input
+            ref={fullBackupInputRef}
+            type="file"
+            accept="application/json,.json"
+            className="sr-only"
+            tabIndex={-1}
+            onChange={(event) => void importFullBackup(event.target.files)}
+          />
+          <button
+            type="button"
+            disabled={restoringFullBackup}
+            onClick={() => void exportFullBackup()}
+            className="h-9 flex-1 rounded-md border border-slate-300 bg-white px-3 text-xs font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+          >
+            导出完整备份
+          </button>
+          <button
+            type="button"
+            disabled={restoringFullBackup}
+            onClick={() => fullBackupInputRef.current?.click()}
+            className="h-9 flex-1 rounded-md border border-amber-200 bg-amber-50 px-3 text-xs font-medium text-amber-800 hover:bg-amber-100 disabled:opacity-50"
+          >
+            {restoringFullBackup ? '导入中...' : '导入完整备份'}
           </button>
         </div>
 

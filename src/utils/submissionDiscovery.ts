@@ -25,7 +25,7 @@ export type SubmissionCandidate = {
 }
 
 const DIRECT_ACTION_PATTERN = /\b(submit|submission|add\s+(?:a\s+)?(?:site|website|tool|product|company|business|listing|link|directory)|get\s+listed|list\s+your|post\s+(?:a\s+)?(?:free\s+)?(?:site|product|tool|ad|listing)|suggest|share|contribute|feature|promote|nominate|publish|recommend|recommand|sign\s*up|join\s+(?:free|now)|create\s+(?:an?\s+)?account|register(?:\s+(?:a\s+)?(?:company|business|site))?|enviar\s+(?:(?:um|seu)\s+)?(?:projeto|produto|site|ferramenta)|cadastrar\s+(?:(?:um|seu)\s+)?(?:projeto|produto|site|ferramenta))\b|提交|投稿|收录|收錄|推荐|推薦|新增|刊登|发布|發佈|登記|登记|加入目录|加入目錄|添加网站|添加網站/i
-const ROUTE_ACTION_PATTERN = /(?:^|[\/?&=_-])(submit|submission|add|register|sign[-_]?up|post|suggest|recommend|recommand|nominate|listing|apply|contribute|publish|enviar|cadastrar)(?=$|[\/?&=_-])/i
+const ROUTE_ACTION_PATTERN = /(?:^|[/?&=_-])(submit|submission|add|register|sign[-_]?up|post|suggest|recommend|recommand|nominate|listing|apply|contribute|publish|enviar|cadastrar)(?=$|[/?&=_-])/i
 const PRODUCT_PATTERN = /\b(tools?|ai|startups?|products?|apps?|software|websites?|sites?|director(?:y|ies)|listings?|compan(?:y|ies)|business(?:es)?|services?|resources?|projetos?|produtos?|ferramentas?|diret[oó]rios?)\b|工具|產品|产品|網站|网站|公司|企業|企业|商家|目錄|目录|收錄|收录/i
 const HUB_PATTERN = /\b(tools?|products?|apps?|companies|businesses|directory|resources|catalog|explore|browse|list)\b|工具列表|工具清單|全部工具|所有工具|网站列表|網站列表|企業列表|企业列表|商家列表|目錄|目录/i
 const CONTACT_PATTERN = /\b(contact|partner|request|advertise)\b|聯絡|联系|合作|洽詢|洽询/i

@@ -2653,8 +2653,8 @@ class BatchRunner {
     if (!humanGate) return
 
     let message = submitPage.message || '该页需要你先完成人工操作'
-    let currentUrl = submitPage.tab.url || humanGate.detectedUrl
-    let shouldResumeAutomatically = false
+    const currentUrl = submitPage.tab.url || humanGate.detectedUrl
+    const shouldResumeAutomatically = false
     this.updateItem(item.id, {
       status: 'awaiting_human',
       currentUrl,

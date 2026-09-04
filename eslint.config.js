@@ -12,12 +12,16 @@ export default defineConfig([
     extends: [
       js.configs.recommended,
       tseslint.configs.recommended,
-      reactHooks.configs.flat.recommended,
+      reactHooks.configs['recommended-latest'],
       reactRefresh.configs.vite,
     ],
     languageOptions: {
       ecmaVersion: 2020,
       globals: globals.browser,
+    },
+    rules: {
+      // Browser automation crosses untyped DOM and extension-message boundaries.
+      '@typescript-eslint/no-explicit-any': 'off',
     },
   },
 ])

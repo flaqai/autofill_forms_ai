@@ -1,170 +1,144 @@
 # AGENTS.md
 
-This file provides guidance to Codex (Codex.ai/code) when working with code in this repository.
+This file provides repository-specific guidance for coding agents working on Chat4o AI Plugin.
 
-## Project Overview
+## Project overview
 
-Chat4o AI Plugin is a Chrome browser extension that provides an AI conversational assistant in a native side panel. It uses Chrome's official Side Panel API (Chrome 114+) for the sidebar interface.
+Chat4o AI Plugin is a Manifest V3 Chrome/Chromium extension for AI chat, product-profile management, web-form autofill, and batch submission. It uses React, TypeScript, Vite, CRXJS, Zustand, and Chrome extension APIs.
 
-## Commands
+The checked-in source is the source of truth. Keep this document and `README.md` synchronized with behavior when the architecture changes.
+
+## Toolchain and commands
+
+Use Node.js 20+ and pnpm 10. Install dependencies from the lockfile:
 
 ```bash
-# Install dependencies (uses pnpm)
-pnpm install
+pnpm install --frozen-lockfile
+```
 
-# Development mode - starts Vite dev server
-pnpm run dev
+Available commands:
 
-# Build for production - outputs to dist/
-pnpm run build
+```bash
+pnpm run dev       # Start the Vite development server
+pnpm run lint      # Run ESLint
+pnpm run build     # Run TypeScript project builds and create dist/
+pnpm run preview   # Preview the Vite production build
+pnpm run package   # Build and create releases/chat4o-ai-plugin-v<version>.zip
+```
 
-# Lint code
+Before handing off code changes, run both:
+
+```bash
 pnpm run lint
-
-# Preview production build
-pnpm run preview
+pnpm run build
 ```
 
-## Chrome Extension Development Workflow
+There is currently no automated test suite. Treat the build, lint, and targeted manual extension checks as the required validation baseline.
 
-1. Run `pnpm run build` to create the `dist/` directory
-2. Load the extension in Chrome:
-   - Navigate to `chrome://extensions/`
-   - Enable "Developer mode"
-   - Click "Load unpacked" and select the `dist/` directory
-3. After code changes, rebuild and click the refresh button in `chrome://extensions/`
-4. Reopen the side panel to see changes
+## Current extension architecture
 
-## Architecture
+### Manifest and entry points
 
-### Chrome Extension Structure
+- `manifest.json` is the Manifest V3 source consumed by CRXJS.
+- `sidepanel.html` loads `src/main.tsx`, which mounts the React router and `src/App.tsx`.
+- The manifest side panel path is `sidepanel.html`.
+- `src/background/index.ts` is the background service worker.
+- `src/content/floatingButton.ts` and `src/content/formHandler.ts` are content scripts injected on `<all_urls>` at `document_idle`.
+- Assets under `public/` are copied to the build root. Reference them as `/icons/...` or `/product-assets/...`, never `/public/...`.
 
-This is a Manifest V3 Chrome extension using the **Side Panel API**:
+### Side panel and standalone window
 
-- **manifest.json**: Defines `side_panel` with `default_path: "index.html"` and requires `sidePanel` permission
-- **Background Service Worker** (`src/background/index.ts`): Handles extension icon clicks and keyboard shortcuts to open the side panel via `chrome.sidePanel.open()`
-- **Side Panel UI** (`index.html` → `src/main.tsx` → `src/App.tsx`): The React app that renders in Chrome's native side panel
-- **Standalone Mode** (`standalone.html` → `src/standalone.tsx` → `src/App.tsx`): Full-screen version that opens in a new tab
-- **No content scripts**: This extension does NOT inject content into web pages
+The same `sidepanel.html` React application serves both modes:
 
-### Standalone Mode
+- Chrome may show it as the configured native side-panel page.
+- Toolbar clicks open it in a popup window with `mode=standalone` in the query string.
+- `src/utils/standalone.ts` sends requests to the background worker to open or focus this window.
+- `src/background/index.ts` owns popup discovery, positioning, deduplication, and target-tab tracking.
+- `isStandaloneMode()` detects the `mode=standalone` query parameter.
 
-The extension supports opening in a full-screen tab for better experience:
+Do not introduce a separate `standalone.html` entry unless the build configuration, manifest, background URL handling, and documentation are updated together.
 
-- **Entry point**: `standalone.html` (separate build output)
-- **Opening**: Use `openStandalonePage(from, sessionId?)` from `src/utils/standalone.ts`
-- **Detection**: Use `isStandaloneMode()` to check if running in standalone mode
-- **URL format**: `chrome-extension://[id]/standalone.html?from=sidebar&sessionId=[id]`
-- **UI differences**:
-  - Hides right sidebar navigation
-  - Shows horizontal navigation in header
-  - Centers content with max-width on large screens
-  - Displays "Fullscreen" badge in header
+### Routing and UI
 
-### Routing
+`src/router/index.tsx` uses `createHashRouter` because extension pages must not depend on server-side history fallback. Routes are declared in `src/router/routes.tsx`:
 
-Uses **React Router** for client-side routing with **hash-based routing**:
+- `/` redirects to `/chat`.
+- `/chat` provides AI chat and current-page autofill.
+- `/batch` provides batch discovery and submission.
+- `/settings` manages API settings, product profiles, assets, field layouts, and backups.
+- Unknown routes redirect to `/chat`.
 
-- **Configuration-based routing**: Routes are defined in `src/router/routes.tsx` using `RouteObject[]` configuration
-- **Hash router**: Uses `createHashRouter` for Chrome extension compatibility
-  - Chrome extension URLs (`chrome-extension://xxx/index.html`) require hash-based routing
-  - Without hash routing, the app would show errors on first load
-- **Router setup**: `src/router/index.tsx` creates and exports the router instance
-- **App.tsx**: Main layout component with `<Outlet />` for nested routes
-- **Routes**:
-  - `/` - Redirects to `/chat`
-  - `/chat` - Chat interface
-  - `/settings` - Settings page
-- **Navigation**: Use `useNavigate()` hook for programmatic navigation and `useLocation()` for current route
-- **Layout**: Fixed header + dynamic content area + sidebar (position depends on standalone mode)
+`src/App.tsx` owns the shared header, route navigation, standalone-mode UI, and page-level runtime recovery. Page components live under `src/pages/`; reusable components live under `src/components/`.
 
-### State Management
+### Content and background automation
 
-Uses **Zustand with immer middleware** for all state management:
+- `src/content/floatingButton.ts` renders the page-level launcher.
+- `src/content/formHandler.ts` discovers, diagnoses, and fills form controls in the page context.
+- `src/content/imageUploadOptimizer.ts` handles upload preparation.
+- `src/background/urlBasedFill.ts` coordinates URL-based extraction, AI mapping, and filling through extension messages.
+- `src/utils/formAutomation.ts` coordinates current-tab fills from the React UI.
+- `src/utils/batchRunner.ts` owns the batch-submission state machine, human gates, and resume behavior.
+- `src/utils/submissionDiscovery.ts` ranks candidate submission pages.
+- `src/utils/evaluationLogs.ts` and `src/utils/runLogs.ts` persist diagnostics and run outcomes.
 
-- **`src/store/chatStore.ts`**: Main chat state (sessions, messages, loading state, view switching)
-  - Manages multiple chat sessions
-  - Handles message sending via `sendMessage()` action
-  - Uses immer for immutable updates
-- **`src/store/settingsStore.ts`**: API configuration (API key, base URL, model)
-  - Uses `persist` middleware for localStorage persistence
-  - Automatically updates `chatAPI` singleton when settings change
+Preserve cancellation and request-ID checks when changing asynchronous fill behavior. Verify both the toolbar popup flow and the floating-button flow when modifying target-tab selection or extension messaging.
 
-### API Layer
+### State and storage
 
-- **`src/services/api.ts`**: Singleton `chatAPI` instance using **ky** (not fetch)
-  - Configurable API key and base URL
-  - OpenAI-compatible chat completion interface
-  - Automatically configured by `settingsStore`
+Zustand stores are under `src/store/`:
 
-### Component Organization
+- `chatStore.ts` persists sessions and messages.
+- `settingsStore.ts` persists API configuration, product profiles, field order, hidden fields, and browser preferences.
+- `chromeStorage.ts` implements Zustand's async storage adapter with `chrome.storage.local` and migrates legacy `localStorage` values when present.
 
-- **`src/pages/`**: Page components (HomePage, ChatPage, SettingsPage)
-- **`src/components/layout/`**: Layout components (RightSidebar)
-- **`src/components/chat/`**: Chat UI (MessageList, MessageBubble, ChatInput)
-- **`src/components/sidebar/`**: Legacy sidebar component (deprecated, use layout/RightSidebar)
-- **`src/components/tools/`**: Tool grid and cards for the home view
-- **`src/components/agent/`**: Agent list and cards
-- **`src/components/settings/`**: Settings panel for API configuration
-- **`src/components/ui/`**: Reusable UI components (Button, Input, Card, ScrollArea) using Radix UI primitives
+Imported image assets and full backups also use `chrome.storage.local`. Do not add API keys, exported backups, user profiles, or other private runtime data to the repository. The settings page's full-backup export may contain secrets and must be treated as a private file.
 
-### Path Aliases
+### API layer
 
-The project uses `@/` as an alias for `src/`:
-- Configured in `tsconfig.app.json` (`"@/*": ["./src/*"]`)
-- Configured in `vite.config.ts` (`alias: { '@': path.resolve(__dirname, './src') }`)
+`src/services/api.ts` exposes the singleton `chatAPI` client built on `ky`. Settings hydrate its API key, base URL, default model, and temperature. It supports an OpenAI-compatible chat-completions path and model-specific Gemini handling.
 
-### Build System
+Keep endpoints configurable. Never hardcode credentials or log authorization headers.
 
-- **Vite** with **@crxjs/vite-plugin** for Chrome extension bundling
-- The plugin automatically handles manifest.json and generates proper extension structure
-- TypeScript compilation happens before Vite build (`tsc -b && vite build`)
+### Internationalization
 
-## Key Technical Decisions
+i18next is initialized in `src/i18n.ts`. Translation resources live in:
 
-1. **Side Panel API over content script injection**: Uses Chrome's native side panel for better performance and user experience
-2. **Zustand over Redux**: Simpler API, less boilerplate, better TypeScript support
-3. **ky over fetch**: Better error handling, automatic retries, cleaner API
-4. **immer middleware**: Enables mutable-style updates while maintaining immutability
-5. **Radix UI**: Accessible, unstyled primitives for building custom UI components
-6. **i18next for internationalization**: Supports English, Simplified Chinese, and Traditional Chinese with automatic browser language detection
-7. **React Router with hash routing**: Configuration-based routing with `createHashRouter` for Chrome extension compatibility
-8. **Configuration constants**: All hardcoded values centralized in `src/config/constants.ts`
-9. **No hardcoding pattern**: All functions accept parameters instead of using hardcoded values (e.g., `createSession({ title, initialMessage })` not `createSession()` with defaults)
+- `src/locales/en.ts`
+- `src/locales/zh-CN.ts`
+- `src/locales/zh-TW.ts`
 
-## Internationalization (i18n)
+When changing an existing translated UI surface, update all three resources. Some newer operational UI strings are currently inline Chinese; avoid expanding that inconsistency when a translation key is practical.
 
-The project uses **i18next** and **react-i18next** for multi-language support:
+### Configuration and aliases
 
-- **Supported languages**: English (en), Simplified Chinese (zh-CN), Traditional Chinese (zh-TW)
-- **Translation files**: Located in `src/locales/` (en.ts, zh-CN.ts, zh-TW.ts)
-- **Configuration**: `src/i18n.ts` handles initialization and language detection
-- **Language persistence**: User's language choice is saved to localStorage
-- **Auto-detection**: Automatically detects browser language on first load
-- **Usage in components**: Import `useTranslation` hook from `react-i18next`
+- Shared constants live in `src/config/constants.ts`.
+- Product-profile matching guidance lives in `src/config/productProfileGuidance.ts`.
+- The `@/` alias maps to `src/` in both `tsconfig.app.json` and `vite.config.ts`.
+- TypeScript strict mode and unused-code checks are enabled.
 
-Example usage:
-```typescript
-import { useTranslation } from 'react-i18next'
+## ESLint policy
 
-function MyComponent() {
-  const { t } = useTranslation()
-  return <div>{t('common.welcome')}</div>
-}
-```
+The project uses ESLint flat config. `eslint-plugin-react-hooks@5.2.0` exposes its flat-compatible preset as `configs['recommended-latest']`; do not change it back to `configs.flat.recommended` without upgrading and verifying the plugin API.
 
-## Important Notes
+`@typescript-eslint/no-explicit-any` is disabled because DOM automation and Chrome message payloads cross dynamically typed boundaries throughout the existing code. Prefer `unknown`, narrow interfaces, and Chrome-provided types for new code whenever practical. React Hooks rules remain enabled and warnings should be resolved rather than suppressed without a concrete reason.
 
-- The extension requires Chrome 114+ for Side Panel API support
-- API key and base URL are stored in localStorage via Zustand persist middleware
-- The keyboard shortcut `Ctrl+Shift+Y` (Mac: `Command+Shift+Y`) opens the side panel
-- Files in `public/` are served from root path (e.g., `/icons/icon.png`, not `/public/icons/icon.png`)
+## Chrome extension development workflow
 
-## Code Style Guidelines
+1. Run `pnpm run build`.
+2. Open `chrome://extensions/`.
+3. Enable Developer mode.
+4. Choose Load unpacked and select `dist/`.
+5. After source changes, rebuild and refresh the extension card.
+6. Reopen the extension window or side panel; refresh target pages when content-script code changes.
 
-### Comments
+Manual verification should be proportional to the change. For form automation, test a normal text field, a select/radio/checkbox control when relevant, cancellation, and a page that should not be filled. For storage changes, test a fresh profile and an existing persisted profile.
 
-- **Use English comments only** - All code comments must be written in English
-- Chinese comments are only allowed in exceptional cases where they provide critical context that cannot be expressed in English
-- This ensures code maintainability and accessibility for international developers
-- When translating existing Chinese comments, preserve the technical meaning accurately
+## Code conventions
+
+- Write code comments in English. Chinese comments are allowed only when they carry critical product context that cannot be expressed clearly in English.
+- Preserve strict TypeScript compilation and avoid non-null assertions unless lifecycle guarantees are explicit.
+- Prefer small typed message contracts over ad hoc message shapes for new background/content communication.
+- Keep hardcoded configuration in `src/config/` where possible.
+- Do not edit generated `dist/` files directly; change source and rebuild.
+- Do not commit `node_modules/`, `.pnpm-store/`, `dist/`, `releases/`, logs, exported backups, or user data.
+- Preserve unrelated user changes in a dirty worktree.

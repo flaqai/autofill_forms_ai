@@ -249,12 +249,15 @@ export const ChatPage = () => {
     }
   }
 
+  const handleFormFillConfirmRef = useRef(handleFormFillConfirm)
+  handleFormFillConfirmRef.current = handleFormFillConfirm
+
   useEffect(() => {
     if (!hasHydrated || !productProfile?.productName || !productProfile?.websiteUrl) return
 
     if (autoFillRequestedRef.current && !autoFillStartedRef.current) {
       autoFillStartedRef.current = true
-      void handleFormFillConfirm(false, initialAutoFillTargetTabIdRef.current)
+      void handleFormFillConfirmRef.current(false, initialAutoFillTargetTabIdRef.current)
     }
 
     const navigationState = getHashAutoFillRequest(location.search)
@@ -263,9 +266,9 @@ export const ChatPage = () => {
     if (!requestId || handledNavigationAutoFillRef.current === requestId) return
 
     handledNavigationAutoFillRef.current = requestId
-    void handleFormFillConfirm(false, navigationState.autoFillTargetTabId)
+    void handleFormFillConfirmRef.current(false, navigationState.autoFillTargetTabId)
     navigate('/chat', { replace: true, state: null })
-  }, [hasHydrated, location.key, location.state, navigate, productProfile])
+  }, [hasHydrated, location.key, location.search, location.state, navigate, productProfile])
 
   const fillCurrentPageButton = (
     <div className="flex gap-2">
