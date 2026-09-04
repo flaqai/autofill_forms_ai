@@ -1,7 +1,7 @@
 {
     "manifest_version": 3,
     "name": "Chat4o AI Plugin",
-    "version": "1.0.0",
+    "version": "1.0.4",
     "description": "An AI conversational tool.",
     "action": {
         "default_title": "Open Chat4o AI"
@@ -30,7 +30,8 @@
             "js": [
                 "src/content/formHandler.ts"
             ],
-            "run_at": "document_idle"
+            "run_at": "document_idle",
+            "all_frames": true
         }
     ],
     "permissions": [

@@ -67,7 +67,7 @@ scripts/package.js              发布包构建脚本
 - `#/batch`：批量提交
 - `#/settings`：API、产品资料、图片和备份管理
 
-`src/content/floatingButton.ts` 和 `src/content/formHandler.ts` 会在 `http`/`https` 页面中作为 content scripts 运行。后台 Service Worker 负责标签页跟踪、独立窗口、消息路由和基于 URL 的填写流程。
+`src/content/floatingButton.ts` 会在顶层 `http`/`https` 页面中运行，`src/content/formHandler.ts` 会同时运行于顶层页面和内嵌 frame，以支持 Airtable 等跨域嵌入表单的自定义下拉框和富文本字段。后台 Service Worker 负责标签页跟踪、独立窗口、消息路由和基于 URL 的填写流程。
 
 ## 数据与跨电脑迁移
 

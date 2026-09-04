@@ -67,7 +67,7 @@ export default {
       temperatureDescription: '控制隨機性：0 更專注，1 更有創意',
       language: '語言',
       about: '關於',
-      version: 'Chat4o AI Plugin v1.0.0',
+      version: 'Chat4o AI Plugin v1.0.4',
       poweredBy: '基於 Chrome Side Panel API'
     }
   }

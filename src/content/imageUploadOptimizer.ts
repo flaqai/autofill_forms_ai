@@ -23,6 +23,16 @@ const DEFAULT_MAX_BYTES = 1024 * 1024
 const MIN_COMPRESSED_QUALITY = 0.55
 const MAX_COMPRESSED_QUALITY = 0.9
 
+function hasExplicitUnsupportedAccept(accept: string) {
+  const tokens = accept.toLowerCase().split(',').map((token) => token.trim()).filter(Boolean)
+  if (tokens.length === 0 || tokens.some((token) => token === '*/*')) return false
+  return !tokens.some((token) => (
+    token === 'image/*' ||
+    ['image/jpeg', 'image/jpg', 'image/png', 'image/webp'].includes(token) ||
+    ['jpg', 'jpeg', 'png', 'webp'].includes(token.replace(/^\./, ''))
+  ))
+}
+
 function compact(value: string) {
   return value.replace(/\s+/g, ' ').trim()
 }
@@ -258,6 +268,30 @@ function shouldOptimize(
   return exceedsMax || missesMin || exceedsRecommended || exceedsBytes || wrongType
 }
 
+function assertRenderedImageSatisfiesConstraints(
+  rendered: RenderedImage,
+  constraints: ImageUploadConstraints
+) {
+  if (constraints.acceptMimeTypes.length > 0 && !constraints.acceptMimeTypes.includes(rendered.mimeType)) {
+    throw new Error(`Optimized image type ${rendered.mimeType} is not accepted by this upload field.`)
+  }
+  if (constraints.maxBytes && rendered.blob.size > constraints.maxBytes) {
+    throw new Error('The optimized image is still larger than the detected file-size limit.')
+  }
+  if (
+    constraints.maxDimensions &&
+    (rendered.width > constraints.maxDimensions.width || rendered.height > constraints.maxDimensions.height)
+  ) {
+    throw new Error('The optimized image still exceeds the detected maximum dimensions.')
+  }
+  if (
+    constraints.minDimensions &&
+    (rendered.width < constraints.minDimensions.width || rendered.height < constraints.minDimensions.height)
+  ) {
+    throw new Error('The optimized image cannot satisfy the detected minimum dimensions.')
+  }
+}
+
 function optimizationSummary(
   original: File,
   sourceWidth: number,
@@ -276,6 +310,9 @@ export async function optimizeImageForInput(
 ): Promise<ImageOptimizationResult> {
   const contextText = nearbyUploadText(input)
   const constraints = parseImageUploadConstraints(contextText, input.accept)
+  if (hasExplicitUnsupportedAccept(input.accept)) {
+    throw new Error(`This upload field only accepts unsupported file types: ${input.accept}`)
+  }
   if (!hasActionableImageConstraints(constraints)) {
     return { file, changed: false, summary: 'No actionable image requirements detected.' }
   }
@@ -303,6 +340,7 @@ export async function optimizeImageForInput(
       outputType,
       constraints.maxBytes
     )
+    assertRenderedImageSatisfiesConstraints(rendered, constraints)
     const optimizedFile = new File(
       [rendered.blob],
       optimizedFileName(file.name, rendered.mimeType),

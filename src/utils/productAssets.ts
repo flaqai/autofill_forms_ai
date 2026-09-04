@@ -16,10 +16,10 @@ export const PRODUCT_ASSET_REFERENCE_PREFIX = 'stored-product-asset://'
 export const PRODUCT_ASSET_STORAGE_PREFIX = 'chat4o-product-asset:'
 
 export const PRODUCT_ASSET_DEFAULTS: Record<ProductAssetProfileKey, string> = {
-  logoImageUrl: 'product-assets/minigpt-logo-square-500x500.jpg',
-  screenshotImageUrl: 'product-assets/minigpt-website-screenshot.png',
-  promoImageUrl: 'product-assets/minigpt-promo-image.jpg',
-  bannerImageUrl: 'product-assets/minigpt-banner-image.png'
+  logoImageUrl: '',
+  screenshotImageUrl: '',
+  promoImageUrl: '',
+  bannerImageUrl: ''
 }
 
 function safeAssetIdPart(value: string) {

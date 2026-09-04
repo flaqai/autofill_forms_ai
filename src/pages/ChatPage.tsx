@@ -217,14 +217,19 @@ export const ChatPage = () => {
       // Final success message
       const actualFilledCount = fillResult.filledCount
       const failedCount = fillResult.failedKeys?.length || 0
-      const resultDetails = failedCount > 0
-        ? `\n\n还有 ${failedCount} 个字段没有成功写入，已在网页字段旁显示 + 学习按钮。`
-        : ''
+      const requiredCount = fillResult.remainingRequiredKeys?.length || 0
+      const invalidCount = fillResult.remainingInvalidKeys?.length || 0
+      const emptyEligibleCount = fillResult.emptyEligibleKeys?.length || 0
+      const resultDetails = failedCount > 0 || requiredCount > 0 || invalidCount > 0
+        ? `\n\n已填完可确认的字段，但仍需人工复核：${requiredCount} 个必填项为空，${invalidCount} 个字段未通过网页校验，${failedCount} 个写入尝试失败。网页字段旁已显示 + 学习按钮。`
+        : emptyEligibleCount > 0
+          ? `\n\n必填项已通过校验；另有 ${emptyEligibleCount} 个非必填/无安全资料字段保持未填，等待你复核。`
+          : ''
       const forceFallbackDetails = forceFill && (fillResult.forcedFallbackCount || 0) > 0
         ? `\n已使用已保存资料补充匹配 ${fillResult.forcedFallbackCount} 个字段。`
         : ''
       updateMessage(sessionId, aiMessageId, {
-        content: `✅ 表单填充完成!\n\n目标页面：${tab.url}\n${forceFill ? '本次使用强制填充模式。\n' : ''}已使用推广资料成功填充 ${actualFilledCount} 个表单字段。${forceFallbackDetails}${resultDetails}`,
+        content: `✅ 表单已填充，等待复核（未提交）\n\n目标页面：${tab.url}\n${forceFill ? '本次使用强制填充模式。\n' : ''}已使用推广资料成功填充 ${actualFilledCount} 个表单字段。${forceFallbackDetails}${resultDetails}`,
         thinking: `${forceFill ? '强制模式：页面类型检查已跳过' : '分析页面结构... ✓'}\n匹配推广资料... ✓\n生成填充数据... ✓\n填充表单... ✓`,
         isStreaming: false
       })
