@@ -69,6 +69,85 @@ scripts/package.js              发布包构建脚本
 
 `src/content/floatingButton.ts` 会在顶层 `http`/`https` 页面中运行，`src/content/formHandler.ts` 会同时运行于顶层页面和内嵌 frame，以支持 Airtable 等跨域嵌入表单的自定义下拉框和富文本字段。后台 Service Worker 负责标签页跟踪、独立窗口、消息路由和基于 URL 的填写流程。
 
+## 直接 CDP 提交工作流
+
+`scripts/cdpSubmissionWorkflow.mjs` 是独立于扩展运行时的 BitBrowser Local API + Playwright CDP 辅助模块。它的人工验证等待策略默认开启，适用于目录站的批量提交：
+
+- 在进入页面、填写表单、提交前和提交后分别检查 Turnstile、reCAPTCHA 与 hCaptcha。
+- 遇到验证时，将页面加入非阻塞等待队列，继续处理其余网站；不点击验证组件、不伪造 token、不注入隐藏验证字段。
+- 用户在保留的浏览器页面完成官方验证后，队列检测到有效状态，只调用一次预先提供的后续回调；超时默认 15 分钟。
+
+批处理脚本应在每个阶段调用 `checkpointHumanVerification(queue, { siteId, page, stage, onVerified })`，并在批次开始时调用 `queue.start()`、结束时调用 `queue.stop()`；也可在处理其他网站的间隙调用 `await queue.poll()`。`onVerified` 只能包含已获授权的正常后续动作，例如检查免费方案后点击提交；不能用于绕过安全机制。
+
+### 私有资料包与缺失字段策略
+
+直接 CDP 工作流可以从私有资料包中加载结构化资料和提交偏好。资料包不应放入仓库，也不应把路径、凭据或完整资料内容写入提交记录。批处理脚本启动时显式传入两个文件路径：
+
+```js
+import {
+  fillResolvedSubmissionField,
+  loadSubmissionContext,
+  resolveSubmissionField
+} from './scripts/cdpSubmissionWorkflow.mjs'
+
+const context = await loadSubmissionContext({
+  profilePath: '/private/promotion-profile.json',
+  preferencesPath: '/private/seo-submission-preferences.md'
+})
+
+const description = resolveSubmissionField(context, {
+  field: 'Detailed description',
+  required: true
+})
+// description.source is profile, generated, or missing.
+
+const filled = await fillResolvedSubmissionField(page, context, {
+  field: 'Short description',
+  locator: 'textarea[name="description"]',
+  required: true
+})
+// Record filled.source and filled.generated with the site outcome.
+```
+
+资料 JSON 是事实来源；偏好 Markdown 决定免费方案、邮箱选择和允许生成字段等行为。解析顺序为：当前用户指令、网站限制、资料 JSON、偏好规则、允许的低风险生成值。`lockedFields` 不会被生成值覆盖。只有摘要、介绍、分类、标签、目标用户、平台、产品类型和商业模式可生成；联系方式、身份、地址、日期、价格、指标、法律/支付信息及反链地址缺失时保持为空并记录为 `missing`。所有生成结果必须在提交记录中标记为 `generated`。
+
+### 单次规划、多动作执行
+
+为了减少逐字段调用模型的延迟，CDP 工作流还提供了结构化规划接口：
+
+```js
+import {
+  createOpenAICompatiblePlanner,
+  SubmissionPlanCache,
+  executeSubmissionPlan,
+  planSubmissionPage
+} from './scripts/cdpSubmissionWorkflow.mjs'
+
+const cache = new SubmissionPlanCache()
+const planner = createOpenAICompatiblePlanner({
+  baseUrl: process.env.SUBMISSION_MODEL_BASE_URL,
+  apiKey: process.env.SUBMISSION_MODEL_API_KEY,
+  model: process.env.SUBMISSION_MODEL_NAME
+})
+const planned = await planSubmissionPage({
+  page,
+  context,
+  cache,
+  planner
+})
+
+const result = await executeSubmissionPlan(
+  page,
+  context,
+  planned.snapshot,
+  planned.plan
+)
+```
+
+`extractSubmissionSnapshot` 只向模型提供一次脱敏后的页面快照；模型负责页面类型、字段语义映射、免费方案判断、生成字段和动作顺序，返回 `fill`、`select`、`check`、`upload`、`submit` 五类动作。Playwright 随后连续执行这些动作，不为每个输入框单独调用模型。`SubmissionPlanCache` 按站点来源、路径和控件签名缓存计划，页面结构改变时自动失效。
+
+执行器会重新获取控件、严格匹配下拉选项、解析资料来源，并在提交动作前再次检查免费方案和人工验证状态。模型不能发出任意 JavaScript 或任意点击指令；付款、验证码、登录和受保护资料仍然必须经过规则或人工处理。`result.records` 包含每个动作的 `profile`、`generated`、`missing` 或 `planner` 来源，可直接写入提交审计记录。
+
 ## 数据与跨电脑迁移
 
 设置、API Key、产品资料、聊天记录和导入的图片保存在 `chrome.storage.local`，不在源码仓库中。

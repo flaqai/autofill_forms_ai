@@ -25,3 +25,7 @@ dist-ssr
 *.sw?
 
 releases/
+
+# Private submission run artifacts (screenshots, reports, and browser state)
+outputs/submission-evidence/
+outputs/submission-pages-batch-*/

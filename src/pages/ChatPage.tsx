@@ -45,6 +45,21 @@ function createFormFillRequestId() {
 
   return `fill_${Date.now()}_${Math.random().toString(36).slice(2, 11)}`
 }
+
+function getInitialAutoFillParams() {
+  const searchParams = new URLSearchParams(window.location.search)
+  const hashQuery = window.location.hash.split('?')[1]
+  const hashParams = hashQuery ? new URLSearchParams(hashQuery) : null
+  const hasNavigationRequest = Boolean(
+    searchParams.get('autoFillRequestId') || hashParams?.get('autoFillRequestId')
+  )
+
+  return {
+    requested: searchParams.get('autoFill') === '1' && !hasNavigationRequest,
+    targetTabId: Number(searchParams.get('targetTabId')) || undefined
+  }
+}
+
 async function getTargetTab() {
   const response = await chrome.runtime.sendMessage({ action: 'getTargetTab' })
   if (!response?.success || !response.tab?.id) {
@@ -72,8 +87,9 @@ export const ChatPage = () => {
   const messages = getCurrentMessages()
   const [showFormFillDialog, setShowFormFillDialog] = useState(false)
   const [activeFillCount, setActiveFillCount] = useState(0)
-  const autoFillRequestedRef = useRef(new URLSearchParams(window.location.search).get('autoFill') === '1')
-  const initialAutoFillTargetTabIdRef = useRef(Number(new URLSearchParams(window.location.search).get('targetTabId')) || undefined)
+  const initialAutoFillParamsRef = useRef(getInitialAutoFillParams())
+  const autoFillRequestedRef = useRef(initialAutoFillParamsRef.current.requested)
+  const initialAutoFillTargetTabIdRef = useRef(initialAutoFillParamsRef.current.targetTabId)
   const autoFillStartedRef = useRef(false)
   const handledNavigationAutoFillRef = useRef<string | null>(null)
   const activeFillRunsRef = useRef(new Map<string, ActiveFormFillRun>())
@@ -129,6 +145,10 @@ export const ChatPage = () => {
   }
 
   const handleFormFillConfirm = async (forceFill = false, targetTabId?: number) => {
+    // Never run two autofill pipelines against the same page at once. Multiple
+    // concurrent writers make controlled inputs appear to type and erase text.
+    if (activeFillRunsRef.current.size > 0) return
+
     // Create session if needed
     let sessionId = currentSessionId
     if (!sessionId) {
@@ -260,19 +280,29 @@ export const ChatPage = () => {
   useEffect(() => {
     if (!hasHydrated || !productProfile?.productName || !productProfile?.websiteUrl) return
 
+    const navigationState = getHashAutoFillRequest(location.search)
+      || location.state as AutoFillNavigationState | null
+    const requestId = navigationState?.autoFillRequestId
+
+    // A reused popup can contain both the legacy top-level autoFill query and
+    // a newer hash navigation request. Prefer the request id and start exactly
+    // one pipeline for the navigation.
+    if (requestId) {
+      if (handledNavigationAutoFillRef.current !== requestId) {
+        handledNavigationAutoFillRef.current = requestId
+        if (!autoFillStartedRef.current) {
+          autoFillStartedRef.current = true
+          void handleFormFillConfirmRef.current(false, navigationState.autoFillTargetTabId)
+        }
+        navigate('/chat', { replace: true, state: null })
+      }
+      return
+    }
+
     if (autoFillRequestedRef.current && !autoFillStartedRef.current) {
       autoFillStartedRef.current = true
       void handleFormFillConfirmRef.current(false, initialAutoFillTargetTabIdRef.current)
     }
-
-    const navigationState = getHashAutoFillRequest(location.search)
-      || location.state as AutoFillNavigationState | null
-    const requestId = navigationState?.autoFillRequestId
-    if (!requestId || handledNavigationAutoFillRef.current === requestId) return
-
-    handledNavigationAutoFillRef.current = requestId
-    void handleFormFillConfirmRef.current(false, navigationState.autoFillTargetTabId)
-    navigate('/chat', { replace: true, state: null })
   }, [hasHydrated, location.key, location.search, location.state, navigate, productProfile])
 
   const fillCurrentPageButton = (

@@ -224,6 +224,23 @@ function getStandaloneUrl(
   return chrome.runtime.getURL(`sidepanel.html?${params.toString()}`)
 }
 
+function getDockedAutoFillPath(targetTabId: number) {
+  const params = new URLSearchParams({
+    autoFill: '1',
+    targetTabId: String(targetTabId)
+  })
+  return `sidepanel.html?${params.toString()}`
+}
+
+async function openDockedAutoFillSidePanel(targetTabId: number) {
+  await chrome.sidePanel.setOptions({
+    tabId: targetTabId,
+    path: getDockedAutoFillPath(targetTabId),
+    enabled: true
+  })
+  await chrome.sidePanel.open({ tabId: targetTabId })
+}
+
 function isStandaloneExtensionUrl(url?: string) {
   if (!url?.startsWith(chrome.runtime.getURL('sidepanel.html'))) return false
 
@@ -250,7 +267,10 @@ function getStandaloneAutoFillUrl(currentUrl: string, targetTabId: number) {
 async function findStandaloneWindows() {
   const windows = await chrome.windows.getAll({
     populate: true,
-    windowTypes: ['popup', 'normal']
+    // Only reuse actual popup windows. A previous compatibility fallback may
+    // have opened a normal extension tab; treating that tab as the standalone
+    // window would keep the UI full-screen forever.
+    windowTypes: ['popup']
   })
 
   return windows
@@ -282,10 +302,15 @@ async function focusStandaloneWindow(windowId: number, anchorWindowId?: number) 
     // The focused update below reports a useful error when the window is gone.
   }
 
-  await chrome.windows.update(windowId, {
-    focused: true,
-    ...(await getPopupBounds(anchorWindowId))
-  })
+  const bounds = await getPopupBounds(anchorWindowId)
+  try {
+    await chrome.windows.update(windowId, { focused: true, ...bounds })
+  } catch (error) {
+    // Some Chromium variants reject geometry updates for an existing popup.
+    // Focusing it without repositioning still preserves the popup UX.
+    console.warn('Popup geometry update failed; focusing without bounds:', error)
+    await chrome.windows.update(windowId, { focused: true })
+  }
   standaloneWindowId = windowId
 }
 
@@ -343,12 +368,24 @@ async function openStandaloneWindow(
     return
   }
 
-  const window = await chrome.windows.create({
-    url: getStandaloneUrl(from, sessionId, Boolean(options.autoFill), options.targetTabId),
-    type: 'popup',
-    ...(await getPopupBounds(options.anchorWindowId)),
-    focused: true
-  })
+  const url = getStandaloneUrl(from, sessionId, Boolean(options.autoFill), options.targetTabId)
+  const bounds = await getPopupBounds(options.anchorWindowId)
+  let window: chrome.windows.Window
+  try {
+    window = await chrome.windows.create({ url, type: 'popup', ...bounds, focused: true })
+  } catch (error) {
+    // Creating a popup with explicit coordinates is rejected by a few
+    // Chromium-based browsers. Retry with only the portable popup options;
+    // the browser will choose the default position instead of opening a tab.
+    console.warn('Popup creation with bounds failed; retrying portable popup:', error)
+    window = await chrome.windows.create({
+      url,
+      type: 'popup',
+      width: 430,
+      height: 780,
+      focused: true
+    })
+  }
 
   standaloneWindowId = window.id || null
 }
@@ -529,9 +566,24 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       sendResponse({ success: true })
     }).catch((error) => {
       console.error('Start floating fill error:', error)
-      sendResponse({ success: false, error: error.message || '无法开始填写' })
+      // Keep the fill action usable through the native side panel if a
+      // particular Chromium build still rejects popup creation.
+      openDockedAutoFillSidePanel(sender.tab!.id!).then(() => {
+        sendResponse({ success: true, fallback: 'sidepanel' })
+      }).catch((fallbackError) => {
+        console.error('Start floating fill side-panel fallback failed:', fallbackError)
+        sendResponse({
+          success: false,
+          error: error?.message || fallbackError?.message || '无法开始填写'
+        })
+      })
     })
     return true
+  }
+
+  if (message.action === 'startFloatingFill' || message.action === 'openFloatingWindow') {
+    sendResponse({ success: false, error: '无法识别当前网页，请刷新当前网页后重试。' })
+    return false
   }
 
   if (message.action === 'rememberFillableTab' && sender.tab?.id) {

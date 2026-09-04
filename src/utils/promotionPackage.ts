@@ -311,16 +311,28 @@ function assetRecord(root: UnknownRecord, source: UnknownRecord) {
 
 function customFieldsFromSource(source: UnknownRecord, company: UnknownRecord) {
   const imported = Array.isArray(source.customFields)
-    ? source.customFields.filter(isRecord).map((field, index): CustomProfileField => ({
-        id: firstString(field.id) || `imported-${index + 1}`,
-        label: firstString(field.label, field.name),
-        value: isCredentialField(field.id, field.label, field.name) ? '' : firstString(field.value, field.text),
-        description: isCredentialField(field.id, field.label, field.name) ? '' : firstString(field.description)
-      })).filter((field) => field.label)
+    ? source.customFields.filter(isRecord).map((field, index): CustomProfileField => {
+        const id = firstString(field.id) || `imported-${index + 1}`
+        const isDefaultListingPassword = id === 'default-password'
+        const isCredential = isCredentialField(field.id, field.label, field.name)
+
+        return {
+          id,
+          label: firstString(field.label, field.name),
+          value: isCredential && !isDefaultListingPassword ? '' : firstString(field.value, field.text),
+          description: isCredential && !isDefaultListingPassword ? '' : firstString(field.description)
+        }
+      }).filter((field) => field.label)
     : []
 
   const address = addressDetails(source, company)
   const knownCustomFields: Array<[string, unknown, string, string]> = [
+    [
+      'default-password',
+      source.password,
+      '密码',
+      '用于目录站要求创建的条目管理密码，例如后续编辑或删除 listing 的密码；不要用于网站账号登录密码。'
+    ],
     ['default-company-address', address.fullAddress, '公司地址', '公司公开业务地址。'],
     ['company-address-line-1', address.line1, 'Address line 1', 'Street address or first address line.'],
     ['company-address-line-2', address.line2, 'Address line 2', 'Suite, unit, building, or second address line.'],

@@ -3076,22 +3076,34 @@ function attachLearnControlsForUnfilledFields(filledKeys: Set<string>) {
   })
 }
 
-window.addEventListener('scroll', updateAllControlPositions, true)
-window.addEventListener('resize', updateAllControlPositions)
-document.addEventListener('click', closeAllMenus)
-window.addEventListener('focus', reportFillableTabActivity)
-document.addEventListener('pointerdown', reportFillableTabActivity, true)
-document.addEventListener('visibilitychange', () => {
-  if (!document.hidden) reportFillableTabActivity()
-})
+const formHandlerRuntimeWindow = window as Window & {
+  __chat4oFormHandlerRuntime?: boolean
+}
+const isFirstFormHandlerRuntime = !formHandlerRuntimeWindow.__chat4oFormHandlerRuntime
 
-const controlObserver = new MutationObserver(() => {
-  if (filledFieldRecords.size > 0 || learnFieldControls.size > 0) {
-    scheduleFieldControlRefresh()
-  }
-})
-controlObserver.observe(document.documentElement, { childList: true, subtree: true })
-reportFillableTabActivity()
+// `ensureFormContentScript` may inject this file again when a page is still
+// mounting. Register the observers and message listener only once; duplicate
+// listeners would execute every fill command multiple times on the same input.
+if (isFirstFormHandlerRuntime) {
+  formHandlerRuntimeWindow.__chat4oFormHandlerRuntime = true
+
+  window.addEventListener('scroll', updateAllControlPositions, true)
+  window.addEventListener('resize', updateAllControlPositions)
+  document.addEventListener('click', closeAllMenus)
+  window.addEventListener('focus', reportFillableTabActivity)
+  document.addEventListener('pointerdown', reportFillableTabActivity, true)
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden) reportFillableTabActivity()
+  })
+
+  const controlObserver = new MutationObserver(() => {
+    if (filledFieldRecords.size > 0 || learnFieldControls.size > 0) {
+      scheduleFieldControlRefresh()
+    }
+  })
+  controlObserver.observe(document.documentElement, { childList: true, subtree: true })
+  reportFillableTabActivity()
+}
 
 // Fill form fields with provided data
 async function fillForm(
@@ -3208,45 +3220,55 @@ async function fillForm(
 }
 
 // Listen for messages from background script
-chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
-  console.log('[FormContent] Received message:', message.action)
+if (isFirstFormHandlerRuntime) {
+  let activeFillPromise: ReturnType<typeof fillForm> | null = null
 
-  if (message.action === 'chat4oPing') {
-    sendResponse({ success: true })
-    return false
-  }
+  chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+    console.log('[FormContent] Received message:', message.action)
 
-  if (message.action === 'extractFormFields') {
-    extractFormFields().then(sendResponse).catch((error) => {
-      console.error('[FormContent] Extract error:', error)
-      sendResponse([])
-    })
-    return true
-  }
+    if (message.action === 'chat4oPing') {
+      sendResponse({ success: true })
+      return false
+    }
 
-  if (message.action === 'fillForm') {
-    fillForm(message.data, message.mappings, message.fallbackData).then(sendResponse).catch((error) => {
-      console.error('[FormContent] Fill error:', error)
-      sendResponse({ success: false, error: (error as Error).message })
-    })
-    return true
-  }
+    if (message.action === 'extractFormFields') {
+      extractFormFields().then(sendResponse).catch((error) => {
+        console.error('[FormContent] Extract error:', error)
+        sendResponse([])
+      })
+      return true
+    }
 
-  if (message.action === 'fillAvailableFileInput') {
-    fillAvailableFileInput(
-      message.assets || [],
-      Boolean(message.multiple),
-      String(message.pickerContext || '')
-    )
-      .then(sendResponse)
-      .catch((error) => {
-        console.warn('[FormFiller] Available file input fill failed.', error)
+    if (message.action === 'fillForm') {
+      // If two popup instances request the same tab at once, share the active
+      // fill instead of starting another writer against the same controls.
+      activeFillPromise ||= fillForm(message.data, message.mappings, message.fallbackData)
+        .finally(() => {
+          activeFillPromise = null
+        })
+      activeFillPromise.then(sendResponse).catch((error) => {
+        console.error('[FormContent] Fill error:', error)
         sendResponse({ success: false, error: (error as Error).message })
       })
-    return true
-  }
+      return true
+    }
 
-  return false
-})
+    if (message.action === 'fillAvailableFileInput') {
+      fillAvailableFileInput(
+        message.assets || [],
+        Boolean(message.multiple),
+        String(message.pickerContext || '')
+      )
+        .then(sendResponse)
+        .catch((error) => {
+          console.warn('[FormFiller] Available file input fill failed.', error)
+          sendResponse({ success: false, error: (error as Error).message })
+        })
+      return true
+    }
+
+    return false
+  })
+}
 
 console.log('[FormContent] Form content script loaded')
