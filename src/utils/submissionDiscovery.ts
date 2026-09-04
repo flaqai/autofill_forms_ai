@@ -24,14 +24,15 @@ export type SubmissionCandidate = {
   source: SubmissionCandidateSource
 }
 
-const DIRECT_ACTION_PATTERN = /\b(submit|submission|add\s+(?:a\s+)?(?:site|website|tool|product|company|business|listing|link|directory)|get\s+listed|list\s+your|post\s+(?:a\s+)?(?:free\s+)?(?:site|product|tool|ad|listing)|suggest|share|contribute|feature|promote|nominate|publish|recommend|recommand|sign\s*up|join\s+(?:free|now)|create\s+(?:an?\s+)?account|register(?:\s+(?:a\s+)?(?:company|business|site))?|enviar\s+(?:(?:um|seu)\s+)?(?:projeto|produto|site|ferramenta)|cadastrar\s+(?:(?:um|seu)\s+)?(?:projeto|produto|site|ferramenta))\b|提交|投稿|收录|收錄|推荐|推薦|新增|刊登|发布|發佈|登記|登记|加入目录|加入目錄|添加网站|添加網站/i
-const ROUTE_ACTION_PATTERN = /(?:^|[/?&=_-])(submit|submission|add|register|sign[-_]?up|post|suggest|recommend|recommand|nominate|listing|apply|contribute|publish|enviar|cadastrar)(?=$|[/?&=_-])/i
+const DIRECT_ACTION_PATTERN = /\b(submit|submission|add\s+(?:a\s+)?(?:site|website|tool|product|company|business|listing|link|directory)|get\s+listed|list\s+your|post\s+(?:a\s+)?(?:free\s+)?(?:site|product|tool|ad|listing)|suggest|share|contribute|feature|promote|nominate|recommend|recommand|sign\s*up|join\s+(?:free|now)|create\s+(?:an?\s+)?account|register(?:\s+(?:a\s+)?(?:company|business|site))?|enviar\s+(?:(?:um|seu)\s+)?(?:projeto|produto|site|ferramenta)|cadastrar\s+(?:(?:um|seu)\s+)?(?:projeto|produto|site|ferramenta))\b|提交|投稿|收录|收錄|推荐|推薦|新增|刊登|登記|登记|加入目录|加入目錄|添加网站|添加網站/i
+const ROUTE_ACTION_PATTERN = /(?:^|[/?&=_-])(submit|submission|add|register|sign[-_]?up|post|suggest|recommend|recommand|nominate|listing|apply|contribute|enviar|cadastrar)(?=$|[/?&=_-])/i
+const UNSAFE_FINAL_ACTION_PATTERN = /(?:^|[^a-z0-9])(?:final(?:ize|ise)?|confirm(?:ation)?|publish|payment|checkout)(?:[^a-z0-9]|$)/i
 const PRODUCT_PATTERN = /\b(tools?|ai|startups?|products?|apps?|software|websites?|sites?|director(?:y|ies)|listings?|compan(?:y|ies)|business(?:es)?|services?|resources?|projetos?|produtos?|ferramentas?|diret[oó]rios?)\b|工具|產品|产品|網站|网站|公司|企業|企业|商家|目錄|目录|收錄|收录/i
 const HUB_PATTERN = /\b(tools?|products?|apps?|companies|businesses|directory|resources|catalog|explore|browse|list)\b|工具列表|工具清單|全部工具|所有工具|网站列表|網站列表|企業列表|企业列表|商家列表|目錄|目录/i
 const CONTACT_PATTERN = /\b(contact|partner|request|advertise)\b|聯絡|联系|合作|洽詢|洽询/i
 const NEGATIVE_PATTERN = /\b(login|log\s+in|sign\s+in|signin|pricing|blog|article|news|privacy|terms|docs|api|careers|about|search|category|tag)\b|登入|登录|隱私|隐私|條款|条款|新聞|新闻|搜尋|搜索|分類|分类/i
 const PROFILE_CARD_PATTERN = /\b(?:profile\s+(?:picture|photo)|avatar)\b.*\b(?:startups?|products?|tools?|projects?)\b/i
-const KNOWN_EXTERNAL_FORM_HOST_PATTERN = /(^|\.)(?:forms\.gle|tally\.so|typeform\.com|airtable\.com|fillout\.com|notionforms\.io)$/i
+const KNOWN_EXTERNAL_FORM_HOST_PATTERN = /(^|\.)(?:forms\.gle|docs\.google\.com|tally\.so|typeform\.com|airtable\.com|fillout\.com|notionforms\.io|jotform\.com|form\.jotform\.com|forms\.office\.com|microsoft\.com|hubspot\.com|hsforms\.com|cognitoforms\.com)$/i
 const INTENT_STOP_WORDS = new Set([
   'add', 'app', 'business', 'company', 'directory', 'free', 'listing', 'post',
   'product', 'publish', 'site', 'submit', 'tool'
@@ -127,6 +128,12 @@ function canNavigateToCandidate(url: string, rootUrl: string) {
   try {
     const parsed = new URL(url)
     if (!['http:', 'https:'].includes(parsed.protocol)) return false
+    if (
+      parsed.pathname.split('/').some((segment) => UNSAFE_FINAL_ACTION_PATTERN.test(segment)) ||
+      Array.from(parsed.searchParams.entries()).some(([key, value]) => (
+        UNSAFE_FINAL_ACTION_PATTERN.test(key) || UNSAFE_FINAL_ACTION_PATTERN.test(value)
+      ))
+    ) return false
 
     const candidateHost = getDiscoveryHost(parsed.toString())
     return (
@@ -327,6 +334,7 @@ export function createPathGuessSubmissionCandidates(
     pathVariants.forEach((pathVariant) => {
       const url = canonicalizeDiscoveryUrl(new URL(pathVariant, origin).toString())
       const routeScore = scoreSubmissionLink({ text: '', href: url }, rootUrl, 1, intentText)
+      if (!Number.isFinite(routeScore)) return
       candidates.push({
         url,
         score: Math.max(32, routeScore - 18 - Math.min(index, 18)),

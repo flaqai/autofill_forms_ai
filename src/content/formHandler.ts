@@ -49,6 +49,8 @@ interface ExtractedFormField {
   maxLength?: number
   value: string
   required: boolean
+  invalid?: boolean
+  validationMessage?: string
   elementIndex: number
   accept?: string
   multiple?: boolean
@@ -69,6 +71,21 @@ interface FillMapping {
 
 interface AssetFillValue {
   assetUrls: string[]
+}
+
+interface VirtualPlanChoiceOption {
+  element: HTMLButtonElement
+  label: string
+  value: string
+  noCost: boolean
+  paid: boolean
+}
+
+interface VirtualPlanChoiceGroup {
+  container: HTMLElement
+  label: string
+  options: VirtualPlanChoiceOption[]
+  anchor: HTMLButtonElement
 }
 
 interface FilledFieldRecord {
@@ -98,6 +115,9 @@ let lastExtractedFields: ExtractedFormField[] = []
 const filledFieldRecords = new Map<string, FilledFieldRecord>()
 const learnFieldControls = new Map<string, HTMLDivElement>()
 const acceptedFileInputNames = new WeakMap<HTMLInputElement, string[]>()
+const acceptedVirtualFileNames = new WeakMap<HTMLElement, string[]>()
+const acceptedCustomSelectValues = new WeakMap<HTMLElement, string>()
+const acceptedVirtualPlanChoices = new WeakMap<HTMLElement, string>()
 let activeEvaluationSessionId = ''
 let evaluationWidget: HTMLDivElement | null = null
 
@@ -114,18 +134,164 @@ function reportFillableTabActivity() {
   })
 }
 
+function isVisibleControl(element: HTMLElement) {
+  const style = window.getComputedStyle(element)
+  const rect = element.getBoundingClientRect()
+  return style.display !== 'none' &&
+    style.visibility !== 'hidden' &&
+    style.pointerEvents !== 'none' &&
+    rect.width > 0 &&
+    rect.height > 0
+}
+
+function isAriaCheckboxControl(element: HTMLElement) {
+  return element.getAttribute('role') === 'checkbox' &&
+    element.hasAttribute('aria-checked') &&
+    isVisibleControl(element)
+}
+
+function isHiddenNativeCheckboxProxy(element: HTMLElement) {
+  if (!(element instanceof HTMLInputElement) || element.type !== 'checkbox') return false
+
+  const style = window.getComputedStyle(element)
+  const rect = element.getBoundingClientRect()
+  const visuallyHidden = element.getAttribute('aria-hidden') === 'true' ||
+    style.display === 'none' ||
+    style.visibility === 'hidden' ||
+    Number(style.opacity) === 0 ||
+    rect.width <= 1 ||
+    rect.height <= 1
+  if (!visuallyHidden) return false
+
+  let container: HTMLElement | null = element.parentElement
+  for (let depth = 0; container && depth < 4; depth++, container = container.parentElement) {
+    const proxies = Array.from(container.querySelectorAll<HTMLElement>('[role="checkbox"][aria-checked]'))
+      .filter((candidate) => candidate !== element && isAriaCheckboxControl(candidate))
+    if (proxies.length === 1) return true
+  }
+
+  return false
+}
+
+function semanticPickerIdentity(element: HTMLElement) {
+  const explicitLabel = element.id
+    ? document.querySelector<HTMLLabelElement>(`label[for="${escapeSelectorValue(element.id)}"]`)?.textContent
+    : ''
+  const labelledBy = element.getAttribute('aria-labelledby')
+    ?.split(/\s+/)
+    .map((id) => document.getElementById(id)?.textContent || '')
+    .join(' ')
+  const parentLabel = element.closest('label')?.textContent || ''
+  const fieldsetLegend = element.closest('fieldset')?.querySelector('legend')?.textContent || ''
+  const nearbyContainer = element.closest<HTMLElement>('[role="group"], .field, .form-group, .control-group, [data-field]')
+  let precedingLabel = ''
+  let node: HTMLElement | null = element
+  for (let depth = 0; node?.parentElement && depth < 4 && !precedingLabel; depth++) {
+    let sibling = node.previousElementSibling as HTMLElement | null
+    while (sibling) {
+      const text = compactWhitespace(sibling.innerText || sibling.textContent || '')
+      if (text && text.length <= 120) {
+        precedingLabel = text
+        break
+      }
+      sibling = sibling.previousElementSibling as HTMLElement | null
+    }
+    node = node.parentElement
+  }
+  return compactWhitespace([
+    element.id,
+    element.getAttribute('name'),
+    (element as HTMLInputElement).placeholder,
+    element.getAttribute('aria-label'),
+    explicitLabel,
+    labelledBy,
+    parentLabel,
+    fieldsetLegend,
+    precedingLabel,
+    nearbyContainer?.innerText || nearbyContainer?.textContent || ''
+  ].filter(Boolean).join(' ')).slice(0, 500).toLowerCase()
+}
+
+function isSemanticSearchSelectControl(element: HTMLElement) {
+  if (!(element instanceof HTMLInputElement)) return false
+  if (!['text', 'search'].includes(element.type)) return false
+
+  const identity = semanticPickerIdentity(element)
+  const hasSubmissionTaxonomy = /\b(category|categories|tags?|topics?|segments?|industr(?:y|ies)|markets?|verticals?|sectors?|use cases?)\b/.test(identity)
+  const hasPickerCue = /\b(search|select|choose|pick|add)\b/.test(identity)
+  return hasSubmissionTaxonomy && hasPickerCue
+}
+
+function isCustomSelectControl(element: HTMLElement) {
+  return !(element instanceof HTMLSelectElement) && (
+    element.getAttribute('role') === 'combobox' ||
+    isSemanticSearchSelectControl(element)
+  )
+}
+
+function strictBooleanValue(value: unknown) {
+  if (typeof value === 'boolean') return value
+  if (typeof value === 'number') {
+    if (value === 1) return true
+    if (value === 0) return false
+    return null
+  }
+  if (typeof value !== 'string') return null
+
+  const normalized = value.trim().toLowerCase()
+  if (/^(true|yes|y|1|on|checked|check|agree|agreed|accept|accepted|是|同意|接受|勾选|勾選)$/.test(normalized)) return true
+  if (/^(false|no|n|0|off|unchecked|uncheck|disagree|decline|declined|否|不同意|不接受|取消勾选|取消勾選)$/.test(normalized)) return false
+  return null
+}
+
+function ariaCheckboxState(element: HTMLElement) {
+  if (!isAriaCheckboxControl(element)) return null
+  const state = element.getAttribute('aria-checked')
+  if (state === 'true') return true
+  if (state === 'false') return false
+  return null
+}
+
+function isUnsafeOptionalCheckboxControl(element: HTMLElement) {
+  const required = (element instanceof HTMLInputElement && element.required) ||
+    element.getAttribute('aria-required') === 'true' ||
+    element.closest('[aria-required="true"]') !== null
+  if (required) return false
+
+  const text = normalizeText(getFieldContext(element))
+  return /\b(newsletter|subscribe|marketing|advertis|promotion|promoted|featured|premium|sponsored|upgrade|paid|payment|billing|credit card|donation|tip jar|contact me|send me|email me|commercial interests?)\b/.test(text)
+}
+
 function isAutofillControlElement(element: HTMLElement) {
   if (element instanceof HTMLInputElement) {
+    const isSemanticPicker = isSemanticSearchSelectControl(element)
     if (
       element.type === 'hidden' ||
       element.type === 'submit' ||
       element.type === 'button' ||
       element.type === 'image' ||
       element.type === 'password' ||
-      element.type === 'search'
+      (element.type === 'search' && !isSemanticPicker)
     ) {
       return false
     }
+
+    if (isHiddenNativeCheckboxProxy(element)) return false
+
+    const hasAccessibleIdentity = Boolean([
+      element.id,
+      element.name,
+      element.placeholder,
+      element.getAttribute('aria-label'),
+      element.getAttribute('aria-labelledby'),
+      element.title
+    ].find(Boolean))
+    const isContentEditableHelper = element.classList.contains('editableFix') || Boolean(
+      element.tabIndex < 0 &&
+      !hasAccessibleIdentity &&
+      element.parentElement?.querySelector('[contenteditable="true"], [contenteditable="plaintext-only"]')
+    )
+    if (isContentEditableHelper) return false
 
     if (element.tabIndex < 0 && element.autocomplete === 'off') return false
   }
@@ -142,7 +308,10 @@ function isAutofillControlElement(element: HTMLElement) {
   const nearbyContainer = element.closest<HTMLElement>('tr, label, [role="group"], .field, .form-group, .control-group')
   const nearbyText = compactWhitespace(nearbyContainer?.innerText || nearbyContainer?.textContent || '').slice(0, 240).toLowerCase()
 
-  if (/(^|[_\s-])(captcha|recaptcha|verification|verify|otp|auth[\s_-]*code|check[\s_-]*code|security[\s_-]*code|search|query)([_\s-]|$)/.test(identifier)) {
+  if (
+    /(^|[_\s-])(captcha|recaptcha|verification|verify|otp|auth[\s_-]*code|check[\s_-]*code|security[\s_-]*code|search|query)([_\s-]|$)/.test(identifier) &&
+    !isSemanticSearchSelectControl(element)
+  ) {
     return false
   }
 
@@ -185,9 +354,262 @@ function submissionFormScore(form: HTMLFormElement) {
   if (/\b(category|categories|industry|tags|keywords)\b/.test(text)) score += 2
   if (/\b(owner email|your email|contact email|company email|submitter email)\b/.test(text)) score += 1
   if (/\b(submit|suggest|add|publish|continue|review)\b/.test(text)) score += 1
+  if (/\b(register|registration|sign up|signup|create account|join now)\b/.test(text)) score += 4
   if (/\b(login|log in|sign in|forgot password|remember me)\b/.test(text)) score -= 8
   if (/\b(search|newsletter|subscribe)\b/.test(text)) score -= 6
   return score
+}
+
+function isEditableContentControl(element: HTMLElement) {
+  const contentEditable = element.getAttribute('contenteditable')?.toLowerCase()
+  return element.isContentEditable || contentEditable === 'true' || contentEditable === 'plaintext-only'
+}
+
+function isVirtualFileControl(element: HTMLElement) {
+  if (element instanceof HTMLInputElement) return false
+  if (element.closest('[role="dialog"]')) return false
+
+  const text = compactWhitespace(element.innerText || element.textContent || '')
+  if (!text || text.length > 180) return false
+  if (!/(?:drop|drag).{0,40}files?.{0,50}(?:browse|choose|select)|(?:browse|choose|select).{0,30}files?/i.test(text)) {
+    return false
+  }
+
+  const rect = element.getBoundingClientRect()
+  if (rect.width < 40 || rect.height < 12) return false
+
+  return !Array.from(element.children).some((child) => {
+    if (!(child instanceof HTMLElement)) return false
+    const childText = compactWhitespace(child.innerText || child.textContent || '')
+    const childRect = child.getBoundingClientRect()
+    return childText === text && childRect.width >= 40 && childRect.height >= 12
+  })
+}
+
+const PLAN_GROUP_LABEL_PATTERN = /\b(?:choose(?:\s+(?:a|your))?\s+(?:listing|plan|tier|option)|select(?:\s+(?:a|your))?\s+(?:listing|plan|tier|option)|listing\s+(?:plan|tier|option|type)|submission\s+(?:plan|tier|option)|(?:plan|tier)\s+(?:choice|option))\b/i
+const PLAN_FORBIDDEN_ACTION_PATTERN = /\b(?:pay|payment|checkout|purchase|buy|upgrade|subscribe|continue|next|submit|publish|confirm|finish|proceed|save)\b/i
+
+function currencyAmountFromText(value: string) {
+  const symbolMatch = value.match(/(?:US\$|CA\$|AU\$|[$€£¥])\s*(\d+(?:[.,]\d{1,2})?)/i)
+  if (symbolMatch) return Number(symbolMatch[1].replace(',', '.'))
+  const codeMatch = value.match(/(\d+(?:[.,]\d{1,2})?)\s*(?:USD|EUR|GBP|CNY|RMB|JPY|CAD|AUD)\b/i)
+  return codeMatch ? Number(codeMatch[1].replace(',', '.')) : null
+}
+
+function planPriceText(value: string) {
+  const noCost = value.match(/\b(?:free|no[\s-]?cost)\b/i)
+  if (noCost) return noCost[0]
+  const symbolPrice = value.match(/(?:US\$|CA\$|AU\$|[$€£¥])\s*\d+(?:[.,]\d{1,2})?/i)
+  if (symbolPrice) return symbolPrice[0]
+  const codePrice = value.match(/\d+(?:[.,]\d{1,2})?\s*(?:USD|EUR|GBP|CNY|RMB|JPY|CAD|AUD)\b/i)
+  return codePrice?.[0] || ''
+}
+
+function virtualPlanOptionLabel(button: HTMLButtonElement) {
+  const fullText = compactWhitespace(button.innerText || button.textContent || '')
+  const price = planPriceText(fullText)
+  const heading = Array.from(button.querySelectorAll<HTMLElement>('h1, h2, h3, h4, h5, h6, [role="heading"], strong'))
+    .map((element) => compactWhitespace(element.innerText || element.textContent || ''))
+    .find((text) => text && text.length <= 90 && !/^\s*(?:free|no[\s-]?cost|(?:US\$|CA\$|AU\$|[$€£¥])?\s*\d)/i.test(text))
+  const lines = (button.innerText || button.textContent || '')
+    .split(/\r?\n/)
+    .map(compactWhitespace)
+    .filter(Boolean)
+  const fallbackTitle = lines.find((line) => (
+    line.length <= 90 &&
+    !planPriceText(line) &&
+    !PLAN_FORBIDDEN_ACTION_PATTERN.test(line)
+  )) || ''
+  const title = heading || fallbackTitle || compactWhitespace(fullText.replace(price, '')).slice(0, 90)
+  if (!title) return ''
+  if (!price || normalizeText(title).includes(normalizeText(price))) return compactWhitespace(title)
+  return compactWhitespace(`${title} ${price}`)
+}
+
+function isNoCostPlanText(value: string) {
+  const text = normalizeText(value)
+  const amount = currencyAmountFromText(value)
+  if (amount !== null && amount > 0) return false
+  return /\b(?:free|no cost)\b/.test(text) || amount === 0 ||
+    /^(?:regular|regular listing|standard|standard listing)$/.test(text)
+}
+
+function isPaidPlanText(value: string) {
+  const amount = currencyAmountFromText(value)
+  return (amount !== null && amount > 0) || /\bpaid\b/i.test(value)
+}
+
+function planGroupLabel(container: HTMLElement) {
+  const labelledBy = container.getAttribute('aria-labelledby')
+    ?.split(/\s+/)
+    .map((id) => document.getElementById(id)?.textContent || '')
+    .join(' ')
+  const candidates = [
+    container.getAttribute('aria-label') || '',
+    labelledBy || '',
+    ...Array.from(container.querySelectorAll<HTMLElement>('legend, h1, h2, h3, h4, h5, h6, [role="heading"], label'))
+      .filter((element) => !element.closest('button'))
+      .map((element) => compactWhitespace(element.innerText || element.textContent || ''))
+  ]
+  return candidates.find((candidate) => candidate.length <= 140 && PLAN_GROUP_LABEL_PATTERN.test(candidate)) || ''
+}
+
+function virtualPlanChoiceGroupFor(element: HTMLElement): VirtualPlanChoiceGroup | null {
+  if (!(element instanceof HTMLButtonElement) || element.type !== 'button') return null
+
+  let container: HTMLElement | null = element.parentElement
+  for (let depth = 0; container && depth < 7; depth++) {
+    if (container === document.body || container.tagName === 'FORM') break
+
+    const buttons = Array.from(container.querySelectorAll<HTMLButtonElement>('button'))
+    if (buttons.length < 2 || buttons.length > 6 ||
+      buttons.some((button) => button.type !== 'button' || button.getAttribute('type')?.toLowerCase() !== 'button') ||
+      buttons.some((button) => !isVisibleControl(button) || button.disabled)) {
+      container = container.parentElement
+      continue
+    }
+
+    const label = planGroupLabel(container)
+    if (!label) {
+      container = container.parentElement
+      continue
+    }
+
+    const options = buttons.map<VirtualPlanChoiceOption>((button) => {
+      const buttonText = compactWhitespace(button.innerText || button.textContent || '')
+      const optionLabel = virtualPlanOptionLabel(button)
+      return {
+        element: button,
+        label: optionLabel,
+        value: optionLabel,
+        noCost: isNoCostPlanText(`${optionLabel} ${buttonText}`),
+        paid: isPaidPlanText(`${optionLabel} ${buttonText}`)
+      }
+    })
+    if (options.some((option) => !option.label)) {
+      container = container.parentElement
+      continue
+    }
+
+    const noCostOptions = options.filter((option) => option.noCost && !option.paid)
+    if (noCostOptions.length === 0 || !options.some((option) => option.paid)) {
+      container = container.parentElement
+      continue
+    }
+
+    return {
+      container,
+      label: compactWhitespace(label),
+      options,
+      anchor: noCostOptions[0].element
+    }
+  }
+
+  return null
+}
+
+function isVirtualPlanChoiceControl(element: HTMLElement) {
+  const group = virtualPlanChoiceGroupFor(element)
+  return Boolean(group && group.anchor === element)
+}
+
+function getVirtualPlanChoiceControls() {
+  const seenContainers = new Set<HTMLElement>()
+  return Array.from(document.querySelectorAll<HTMLButtonElement>('button[type="button"]'))
+    .map((button) => virtualPlanChoiceGroupFor(button))
+    .filter((group): group is VirtualPlanChoiceGroup => Boolean(group && group.anchor === group.options.find((option) => option.noCost && !option.paid)?.element))
+    .filter((group) => {
+      if (seenContainers.has(group.container)) return false
+      seenContainers.add(group.container)
+      return true
+    })
+    .map((group) => group.anchor)
+}
+
+function virtualPlanSelectedState(element: HTMLElement) {
+  const state = normalizeText([
+    element.getAttribute('aria-pressed'),
+    element.getAttribute('aria-selected'),
+    element.getAttribute('aria-checked'),
+    element.getAttribute('data-selected'),
+    element.getAttribute('data-state')
+  ].filter(Boolean).join(' '))
+  if (/\b(?:true|selected|checked|active|on)\b/.test(state)) return true
+  return Array.from(element.classList).some((className) => /^(?:is-)?(?:selected|checked|chosen|current)$|^active$/i.test(className))
+}
+
+function virtualPlanStyleSignature(element: HTMLElement) {
+  const style = window.getComputedStyle(element)
+  return [
+    element.className,
+    element.getAttribute('style') || '',
+    style.backgroundColor,
+    style.borderColor,
+    style.borderWidth,
+    style.boxShadow,
+    style.outlineColor,
+    style.outlineWidth
+  ].join('|')
+}
+
+function exactNoCostPreference(value: unknown) {
+  return /^(?:free|no cost|regular|regular listing|standard|standard listing)$/
+    .test(normalizeText(String(value ?? '')))
+}
+
+function findSafeVirtualPlanOption(group: VirtualPlanChoiceGroup, value: unknown) {
+  const desired = normalizeText(String(value ?? ''))
+  if (!desired) return null
+  const safeOptions = group.options.filter((option) => (
+    option.noCost &&
+    !option.paid &&
+    !PLAN_FORBIDDEN_ACTION_PATTERN.test(compactWhitespace(option.element.innerText || option.element.textContent || ''))
+  ))
+  const exact = safeOptions.filter((option) => (
+    normalizeText(option.label) === desired || normalizeText(option.value) === desired
+  ))
+  if (exact.length === 1) return exact[0]
+  return exactNoCostPreference(value) && safeOptions.length === 1 ? safeOptions[0] : null
+}
+
+async function setVirtualPlanChoiceValue(element: HTMLElement, value: unknown) {
+  const group = virtualPlanChoiceGroupFor(element)
+  if (!group || group.anchor !== element) return false
+  const option = findSafeVirtualPlanOption(group, value)
+  if (!option) return false
+
+  if (virtualPlanSelectedState(option.element)) {
+    acceptedVirtualPlanChoices.set(element, option.label)
+    return true
+  }
+
+  const beforeStyle = virtualPlanStyleSignature(option.element)
+  option.element.click()
+  await wait(160)
+  option.element.blur()
+  await wait(100)
+
+  const semanticallySelected = virtualPlanSelectedState(option.element)
+  const selectionStyleChanged = beforeStyle !== virtualPlanStyleSignature(option.element)
+  if (!semanticallySelected && !selectionStyleChanged) return false
+  if (group.options.some((candidate) => candidate.paid && virtualPlanSelectedState(candidate.element))) return false
+
+  acceptedVirtualPlanChoices.set(element, option.label)
+  return true
+}
+
+function currentVirtualPlanChoice(element: HTMLElement) {
+  const group = virtualPlanChoiceGroupFor(element)
+  if (!group || group.anchor !== element) return ''
+  const selected = group.options.find((option) => virtualPlanSelectedState(option.element))
+  return selected?.label || acceptedVirtualPlanChoices.get(element) || ''
+}
+
+function sortElementsInDocumentOrder(elements: HTMLElement[]) {
+  return elements.sort((left, right) => {
+    if (left === right) return 0
+    return left.compareDocumentPosition(right) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1
+  })
 }
 
 function keepPrimarySubmissionForms(elements: HTMLElement[]) {
@@ -195,11 +617,11 @@ function keepPrimarySubmissionForms(elements: HTMLElement[]) {
     elements.map((element) => element.closest('form')).filter((form): form is HTMLFormElement => form instanceof HTMLFormElement)
   )).map((form) => ({ form, score: submissionFormScore(form) }))
   const bestScore = Math.max(0, ...scoredForms.map(({ score }) => score))
-  if (bestScore < 7) return elements
+  if (scoredForms.length <= 1 || bestScore < 3) return elements
 
   const allowedForms = new Set(
     scoredForms
-      .filter(({ score }) => score >= 5 && score >= bestScore - 3)
+      .filter(({ score }) => score >= 3 && score >= bestScore - 2)
       .map(({ form }) => form)
   )
 
@@ -210,26 +632,68 @@ function keepPrimarySubmissionForms(elements: HTMLElement[]) {
 }
 
 function getFillableElements() {
-  const nativeElements = Array.from(document.querySelectorAll('input, textarea, select, [role="combobox"]')) as Array<
-    HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement | HTMLElement
-  >
-  const richTextElements = Array.from(document.querySelectorAll<HTMLElement>('[contenteditable]'))
-    .filter((element) => element.isContentEditable)
-    .filter((element) => {
-      const parentEditor = element.parentElement?.closest<HTMLElement>('[contenteditable]')
-      return !parentEditor || !parentEditor.isContentEditable
-    })
-  const elements = Array.from(new Set([...nativeElements, ...richTextElements]))
+  // Query every supported control together so synthetic field_N keys follow
+  // the real DOM order. Appending rich-text controls after native controls can
+  // shift indexes on Airtable-style forms and fill the preceding field.
+  const nativeElements = Array.from(document.querySelectorAll<HTMLElement>(
+    'input, textarea, select, [role="combobox"], [role="checkbox"][aria-checked], [contenteditable]'
+  )).filter((element) => {
+    if (!element.matches('[contenteditable]')) return true
+    if (!isEditableContentControl(element)) return false
+    const parentEditor = element.parentElement?.closest<HTMLElement>('[contenteditable]')
+    return !parentEditor || !isEditableContentControl(parentEditor)
+  })
+  const virtualFileControls = Array.from(document.querySelectorAll<HTMLElement>(
+    'button, [role="button"], label, [tabindex], div, span, p'
+  )).filter(isVirtualFileControl)
+  const virtualPlanChoiceControls = getVirtualPlanChoiceControls()
+  const elements = sortElementsInDocumentOrder(Array.from(new Set([
+    ...nativeElements,
+    ...virtualFileControls,
+    ...virtualPlanChoiceControls
+  ])))
 
   const safeElements = elements.filter((el) => {
     if ('disabled' in el && el.disabled) return false
+    // File inputs are frequently visually hidden behind a drop zone. Keep
+    // them even when sites assign a negative tab index to the native control.
+    if (el instanceof HTMLInputElement && el.type === 'file') return true
     return isAutofillControlElement(el)
   })
 
-  return keepPrimarySubmissionForms(safeElements)
+  const primaryElements = keepPrimarySubmissionForms(safeElements)
+  const seenRadioGroups = new Set<string>()
+
+  return primaryElements.filter((element) => {
+    if (!(element instanceof HTMLInputElement) || element.type !== 'radio' || !element.name) return true
+
+    const formIndex = element.form ? Array.from(document.forms).indexOf(element.form) : -1
+    const groupKey = `${formIndex}:${element.name}`
+    if (seenRadioGroups.has(groupKey)) return false
+    seenRadioGroups.add(groupKey)
+    return true
+  })
 }
 
 function getSelectOptions(element: HTMLElement) {
+  const virtualPlanGroup = virtualPlanChoiceGroupFor(element)
+  if (virtualPlanGroup?.anchor === element) {
+    return virtualPlanGroup.options.map((option) => ({
+      label: option.label,
+      value: option.value
+    }))
+  }
+
+  if (element instanceof HTMLInputElement && element.type === 'radio' && element.name) {
+    return Array.from(document.querySelectorAll<HTMLInputElement>('input[type="radio"]'))
+      .filter((candidate) => candidate.name === element.name && candidate.form === element.form)
+      .map((candidate) => ({
+        label: getRadioOptionLabel(candidate),
+        value: candidate.value
+      }))
+      .filter((option) => option.label)
+  }
+
   if (element instanceof HTMLSelectElement) {
     return Array.from(element.options)
       .map((option) => ({
@@ -252,6 +716,15 @@ function getSelectOptions(element: HTMLElement) {
       return { label, value: option.getAttribute('data-value') || label }
     })
     .filter((option, index, list) => option.label && list.findIndex((item) => item.label === option.label) === index)
+}
+
+function getRadioOptionLabel(element: HTMLInputElement) {
+  const explicitLabel = element.id
+    ? document.querySelector<HTMLLabelElement>(`label[for="${escapeSelectorValue(element.id)}"]`)
+    : null
+  const parentLabel = element.closest('label')
+  const optionText = explicitLabel?.textContent || parentLabel?.textContent || element.getAttribute('aria-label') || element.value
+  return compactWhitespace(optionText || element.value)
 }
 
 function compactWhitespace(value: string) {
@@ -303,19 +776,13 @@ function isScrollable(element: HTMLElement) {
   return element.scrollHeight > element.clientHeight && /(auto|scroll)/.test(`${style.overflow}${style.overflowY}`)
 }
 
-function getScrollableOptionContainers() {
-  return Array.from(document.querySelectorAll('body *'))
-    .filter((element): element is HTMLElement => element instanceof HTMLElement && isScrollable(element))
-    .filter((element) => element.querySelector('[role="option"], [data-combobox-option], [data-option], option'))
-}
-
 async function collectCustomSelectOptions(element: HTMLElement) {
   element.click()
   await wait(160)
 
   const collected = new Map<string, { label: string; value: string }>()
   const collectVisible = () => {
-    getVisibleOptionElements().forEach((option) => {
+    ownedVisibleOptionElements(element).forEach((option) => {
       const label = option.textContent?.trim() || ''
       if (label) {
         collected.set(label, {
@@ -328,7 +795,7 @@ async function collectCustomSelectOptions(element: HTMLElement) {
 
   collectVisible()
 
-  const containers = getScrollableOptionContainers()
+  const containers = ownedScrollableOptionContainers(element)
   for (const container of containers.slice(0, 3)) {
     const originalScrollTop = container.scrollTop
     container.scrollTop = 0
@@ -360,37 +827,75 @@ async function extractFormFields() {
   for (const [index, element] of inputs.entries()) {
     const el = element
 
-    const isCustomSelect = el.getAttribute('role') === 'combobox' && !(el instanceof HTMLSelectElement)
+    const isCustomSelect = isCustomSelectControl(el)
+    const isAriaCheckbox = isAriaCheckboxControl(el)
+    const isVirtualFile = isVirtualFileControl(el)
+    const isVirtualPlanChoice = isVirtualPlanChoiceControl(el)
     const fieldName = el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement || el instanceof HTMLSelectElement
       ? el.name || el.id || `field_${index}`
       : el.getAttribute('name') || el.id || `field_${index}`
-    const fieldType = isCustomSelect
+    const fieldType = isVirtualFile
+      ? 'file'
+      : isVirtualPlanChoice
+        ? 'select'
+      : isCustomSelect
       ? 'select'
+      : isAriaCheckbox
+        ? 'checkbox'
       : el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement || el instanceof HTMLSelectElement
         ? el.type || 'text'
-        : el.isContentEditable
+        : isEditableContentControl(el)
           ? 'richtext'
           : 'text'
-    const fieldValue = el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement || el instanceof HTMLSelectElement
-      ? el.value || ''
-      : getCurrentValue(el)
+    const fieldValue = el instanceof HTMLInputElement && el.type === 'radio'
+      ? getSelectedRadio(el)
+        ? getFieldLabel(getSelectedRadio(el)!) || getSelectedRadio(el)!.value
+        : ''
+      : isAriaCheckbox
+        ? ariaCheckboxState(el) === true ? 'true' : ''
+      : el instanceof HTMLInputElement && el.type === 'checkbox'
+        ? el.checked ? getFieldLabel(el) || el.value || 'true' : ''
+      : el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement || el instanceof HTMLSelectElement
+          ? el.value || ''
+          : isVirtualPlanChoice ? currentVirtualPlanChoice(el) : getCurrentValue(el)
     const options = isCustomSelect ? await collectCustomSelectOptions(el) : getSelectOptions(el)
+    const required = el instanceof HTMLInputElement && el.type === 'radio' && el.name
+      ? Array.from(document.querySelectorAll<HTMLInputElement>('input[type="radio"]'))
+          .filter((candidate) => candidate.name === el.name && candidate.form === el.form)
+          .some((candidate) => candidate.required || candidate.getAttribute('aria-required') === 'true')
+      : (el instanceof HTMLInputElement && el.required) ||
+        el.getAttribute('aria-required') === 'true' ||
+        (isAriaCheckbox && el.closest('[aria-required="true"]') !== null)
+    const nativeControl = el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement || el instanceof HTMLSelectElement
+      ? el
+      : null
+    const invalid = el.getAttribute('aria-invalid') === 'true' || Boolean(
+      nativeControl && fieldValue && !nativeControl.checkValidity()
+    )
     const field = {
       id: el.id || `field_${index}`,
       name: fieldName,
       type: fieldType,
       tagName: el.tagName.toLowerCase(),
       placeholder: (el as HTMLInputElement).placeholder || el.getAttribute('data-placeholder') || el.getAttribute('aria-placeholder') || '',
-      label: getExtractedFieldLabel(el),
-      context: getFieldContext(el),
+      label: isVirtualPlanChoice ? virtualPlanChoiceGroupFor(el)?.label || '' : getExtractedFieldLabel(el),
+      context: el instanceof HTMLInputElement && el.type === 'file'
+        ? uploadContextFor(el)
+        : isVirtualFile
+          ? getFieldContext(el)
+        : getFieldContext(el),
       maxLength: inferFieldMaxLength(el),
       value: fieldValue,
-      required: (el as HTMLInputElement).required || el.getAttribute('aria-required') === 'true',
+      required,
+      invalid,
+      validationMessage: invalid && nativeControl ? nativeControl.validationMessage : '',
       elementIndex: index,
-      accept: el instanceof HTMLInputElement && el.type === 'file' ? el.accept : undefined,
-      multiple: el instanceof HTMLInputElement && el.type === 'file' ? el.multiple : undefined,
+      accept: el instanceof HTMLInputElement && el.type === 'file'
+        ? el.accept
+        : isVirtualFile ? 'image/*' : undefined,
+      multiple: el instanceof HTMLInputElement && el.type === 'file' ? el.multiple : false,
       options,
-      isCustomSelect
+      isCustomSelect: isCustomSelect || isVirtualPlanChoice
     }
 
     fields.push(field)
@@ -403,6 +908,15 @@ async function extractFormFields() {
 
 // Get label text for a form field
 function getFieldLabel(element: HTMLElement): string {
+  if (element instanceof HTMLInputElement && element.type === 'radio' && element.name) {
+    const fieldsetLegend = element.closest('fieldset')?.querySelector('legend')?.textContent?.trim()
+    if (fieldsetLegend) return fieldsetLegend
+
+    const radioGroup = element.closest<HTMLElement>('[role="radiogroup"]')
+    const radioGroupLabel = radioGroup ? getAriaLabelledByText(radioGroup) || radioGroup.getAttribute('aria-label') : ''
+    if (radioGroupLabel) return compactWhitespace(radioGroupLabel)
+  }
+
   // Try to find associated label
   if (element.id) {
     const label = document.querySelector(`label[for="${element.id}"]`)
@@ -442,14 +956,19 @@ function getFieldLabel(element: HTMLElement): string {
 }
 
 function getExtractedFieldLabel(element: HTMLElement): string {
+  const virtualPlanGroup = virtualPlanChoiceGroupFor(element)
+  if (virtualPlanGroup?.anchor === element) return virtualPlanGroup.label
+
   const explicitLabel = getFieldLabel(element)
   if (explicitLabel) return explicitLabel
 
-  if (element.isContentEditable || element instanceof HTMLTextAreaElement) {
-    return getVisualLabelAboveField(element) || getNearbyFieldLabel(element)
-  }
+  const ariaLabelledBy = getAriaLabelledByText(element)
+  if (isUsableFieldLabel(ariaLabelledBy, element)) return compactWhitespace(ariaLabelledBy)
 
-  return ''
+  const ariaLabel = element.getAttribute('aria-label') || ''
+  if (isUsableFieldLabel(ariaLabel, element)) return compactWhitespace(ariaLabel)
+
+  return getVisualLabelAboveField(element) || getNearbyFieldLabel(element)
 }
 
 function getNearbyFieldLabel(element: HTMLElement) {
@@ -541,6 +1060,11 @@ function getAriaLabelledByText(element: HTMLElement) {
 }
 
 function getFieldContext(element: HTMLElement): string {
+  const virtualPlanGroup = virtualPlanChoiceGroupFor(element)
+  if (virtualPlanGroup?.anchor === element) {
+    return textSnippet(`${virtualPlanGroup.label} | ${compactWhitespace(virtualPlanGroup.container.innerText || virtualPlanGroup.container.textContent || '')}`, 900)
+  }
+
   const pieces = [
     getExtractedFieldLabel(element),
     (element as HTMLInputElement).placeholder || '',
@@ -583,7 +1107,11 @@ function inferFieldMaxLength(element: HTMLElement) {
   const counterMatches = Array.from(
     context.matchAll(/(?:^|\D)\d{1,4}\s*\/\s*(\d{1,4})\s*(words?|characters?|chars?)?/gi)
   )
-    .filter((match) => !/^words?$/i.test(match[2] || ''))
+    .filter((match) => {
+      const unit = match[2] || ''
+      const limit = Number(match[1])
+      return !/^words?$/i.test(unit) && (/^(?:characters?|chars?)$/i.test(unit) || limit >= 20)
+    })
     .map((match) => Number(match[1]))
     .filter((value) => value > 0 && value <= 2000)
   if (counterMatches.length > 0) return Math.min(...counterMatches)
@@ -727,7 +1255,7 @@ function setRichTextValue(element: HTMLTextAreaElement, value: unknown) {
 }
 
 function setContentEditableValue(element: HTMLElement, value: unknown) {
-  if (!element.isContentEditable) return false
+  if (!isEditableContentControl(element)) return false
 
   const text = String(value ?? '').replace(/\r\n?/g, '\n').trim()
   const expectedText = compactWhitespace(text)
@@ -761,9 +1289,14 @@ function setNativeValue(
   element: HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement,
   value: unknown
 ) {
-  if (element instanceof HTMLInputElement && (element.type === 'checkbox' || element.type === 'radio')) {
+  if (!isScalarFillValue(value)) return false
+
+  element.focus()
+  if (element instanceof HTMLInputElement && element.type === 'checkbox') {
+    const desired = strictBooleanValue(value)
+    if (desired === null) return false
     const checkedSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'checked')?.set
-    checkedSetter?.call(element, Boolean(value))
+    checkedSetter?.call(element, desired)
   } else {
     const prototype = element instanceof HTMLTextAreaElement
       ? HTMLTextAreaElement.prototype
@@ -774,9 +1307,18 @@ function setNativeValue(
     valueSetter?.call(element, String(value ?? ''))
   }
 
-  element.dispatchEvent(new Event('input', { bubbles: true }))
-  element.dispatchEvent(new Event('change', { bubbles: true }))
-  element.dispatchEvent(new Event('blur', { bubbles: true }))
+  const inputEvent = element instanceof HTMLSelectElement || (element instanceof HTMLInputElement && element.type === 'checkbox')
+    ? new Event('input', { bubbles: true, composed: true })
+    : new InputEvent('input', {
+        bubbles: true,
+        composed: true,
+        inputType: 'insertText',
+        data: String(value ?? '')
+      })
+  element.dispatchEvent(inputEvent)
+  element.dispatchEvent(new Event('change', { bubbles: true, composed: true }))
+  element.dispatchEvent(new Event('blur', { bubbles: true, composed: true }))
+  return true
 }
 
 function wait(ms: number) {
@@ -789,6 +1331,10 @@ function isAssetFillValue(value: unknown): value is AssetFillValue {
     typeof value === 'object' &&
     Array.isArray((value as AssetFillValue).assetUrls)
   )
+}
+
+function isScalarFillValue(value: unknown): value is string | number | boolean {
+  return typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean'
 }
 
 function extensionAssetUrl(assetUrl: string) {
@@ -826,16 +1372,28 @@ async function fileFromAssetUrl(assetUrl: string, index: number) {
     throw new Error('Saved product image is no longer available. Please choose it again in Settings.')
   }
 
-  const resolvedUrl = extensionAssetUrl(assetUrl)
-  const response = await fetch(storedAsset?.dataUrl || resolvedUrl)
+  let resolvedAsset = storedAsset
+  if (!resolvedAsset) {
+    const response = await chrome.runtime.sendMessage({
+      action: 'resolveUploadAsset',
+      assetUrl: extensionAssetUrl(assetUrl),
+      index
+    })
+    if (!response?.success || !response.asset?.dataUrl) {
+      throw new Error(response?.error || `Failed to load asset: ${assetUrl}`)
+    }
+    resolvedAsset = response.asset as StoredProductAsset
+  }
+
+  const response = await fetch(resolvedAsset.dataUrl)
   if (!response.ok) {
     throw new Error(`Failed to load asset: ${assetUrl}`)
   }
 
   const blob = await response.blob()
-  const fileName = storedAsset?.fileName || fileNameFromUrl(assetUrl, index)
+  const fileName = resolvedAsset.fileName || fileNameFromUrl(assetUrl, index)
   return new File([blob], fileName, {
-    type: storedAsset?.mimeType || blob.type || mimeTypeFromFileName(fileName)
+    type: resolvedAsset.mimeType || blob.type || mimeTypeFromFileName(fileName)
   })
 }
 
@@ -856,44 +1414,109 @@ function uploadContainerFor(element: HTMLInputElement) {
   return uploadContainer || labelledControl || element.parentElement || element
 }
 
+function uploadContextFor(element: HTMLInputElement) {
+  const baseContext = getFieldContext(element)
+  if (/\b(logo|icon|avatar|image|picture|photo|screenshot|banner|gallery|upload)\b|图标|圖標|图片|圖片|上传|上傳/i.test(baseContext)) {
+    return baseContext
+  }
+
+  let node: HTMLElement | null = element
+  for (let depth = 0; node?.parentElement && depth < 6; depth++) {
+    let sibling = node.previousElementSibling as HTMLElement | null
+    while (sibling) {
+      const text = compactWhitespace(sibling.innerText || sibling.textContent || '')
+      if (text && text.length <= 600) {
+        return textSnippet(`${text} | ${baseContext}`, 900)
+      }
+      sibling = sibling.previousElementSibling as HTMLElement | null
+    }
+    node = node.parentElement
+  }
+
+  return baseContext
+}
+
+function uploadEventTargets(element: HTMLInputElement) {
+  const candidates: HTMLElement[] = [element]
+  const labelledControl = element.id
+    ? document.querySelector<HTMLElement>(`label[for="${escapeSelectorValue(element.id)}"]`)
+    : null
+  const uploadContainer = uploadContainerFor(element)
+  const clickableAncestor = element.closest<HTMLElement>('[role="button"], label, button')
+
+  if (labelledControl) candidates.push(labelledControl)
+  if (clickableAncestor) candidates.push(clickableAncestor)
+  if (uploadContainer) candidates.push(uploadContainer)
+
+  let ancestor = uploadContainer.parentElement
+  for (let depth = 0; ancestor && depth < 3; depth++) {
+    candidates.push(ancestor)
+    ancestor = ancestor.parentElement
+  }
+
+  return Array.from(new Set(candidates))
+}
+
 function uploadSnapshot(element: HTMLInputElement) {
-  const container = uploadContainerFor(element)
-  const imageSignature = Array.from(container.querySelectorAll<HTMLImageElement>('img'))
+  const containers = uploadEventTargets(element)
+  const imageSignature = containers
+    .flatMap((container) => Array.from(container.querySelectorAll<HTMLImageElement>('img')))
     .map((image) => image.currentSrc || image.src || image.alt)
     .join('|')
-  const text = compactWhitespace(container.innerText || container.textContent || '')
+  const text = compactWhitespace(containers
+    .map((container) => container.innerText || container.textContent || '')
+    .join(' '))
   return {
-    childCount: container.querySelectorAll('*').length,
+    childCount: containers.reduce((count, container) => count + container.querySelectorAll('*').length, 0),
     imageSignature,
     text: text.slice(0, 1200)
   }
 }
 
-function fileNamesFromInput(element: HTMLInputElement) {
-  return Array.from(element.files || []).map((file) => file.name)
+function uploadHasError(text: string) {
+  return /\b(error|failed|invalid|too (?:large|small)|not supported|unsupported|try again|upload failed|upload error|rejected)\b|上传失败|上傳失敗|格式错误|格式錯誤|文件过大|檔案過大|不支持|不支援/i.test(text)
 }
 
-function uploadWasAccepted(
+function uploadAcceptanceEvidence(
   element: HTMLInputElement,
   expectedFileNames: string[],
   before: ReturnType<typeof uploadSnapshot>
 ) {
-  const currentFileNames = fileNamesFromInput(element)
-  if (currentFileNames.length > 0) {
-    return expectedFileNames.every((name) => currentFileNames.includes(name))
-  }
-
   const after = uploadSnapshot(element)
   const visibleFileName = expectedFileNames.some((name) => (
     after.text.includes(name) ||
     after.text.includes(name.replace(/\.[^.]+$/, ''))
   ))
-  const previewChanged = (
-    after.imageSignature !== before.imageSignature ||
-    after.childCount !== before.childCount
-  )
+  const previewChanged = Boolean(after.imageSignature) && after.imageSignature !== before.imageSignature
 
-  return visibleFileName || previewChanged
+  return {
+    accepted: !uploadHasError(after.text) && (visibleFileName || previewChanged),
+    error: uploadHasError(after.text)
+  }
+}
+
+async function waitForUploadAcceptance(
+  element: HTMLInputElement,
+  expectedFileNames: string[],
+  before: ReturnType<typeof uploadSnapshot>,
+  timeoutMs = 4000
+) {
+  const deadline = Date.now() + timeoutMs
+  let positiveSince = 0
+
+  while (Date.now() < deadline) {
+    const evidence = uploadAcceptanceEvidence(element, expectedFileNames, before)
+    if (evidence.error) return false
+    if (evidence.accepted) {
+      if (positiveSince === 0) positiveSince = Date.now()
+      if (Date.now() - positiveSince >= 650) return true
+    } else {
+      positiveSince = 0
+    }
+    await wait(180)
+  }
+
+  return false
 }
 
 function assignFiles(element: HTMLInputElement, files: FileList) {
@@ -911,9 +1534,19 @@ function dispatchFileEvents(element: HTMLInputElement) {
 }
 
 function dispatchDropEvents(element: HTMLInputElement, dataTransfer: DataTransfer) {
-  const target = uploadContainerFor(element)
-  if (target === element) return
+  const targets = uploadEventTargets(element).filter((candidate) => candidate !== element)
+  const target = targets.find((candidate) => {
+    const identity = [
+      candidate.id,
+      candidate.className,
+      candidate.getAttribute('data-testid'),
+      candidate.getAttribute('role'),
+      candidate.innerText || candidate.textContent || ''
+    ].filter(Boolean).join(' ')
+    return /\b(upload|drop[ -]?zone|drop files?|browse|choose file|attach)\b/i.test(identity)
+  }) || targets[0]
 
+  if (!target) return
   for (const type of ['dragenter', 'dragover', 'drop']) {
     target.dispatchEvent(new DragEvent(type, {
       bubbles: true,
@@ -931,6 +1564,7 @@ async function setFileInputValue(element: HTMLInputElement, value: unknown) {
   if (assetUrls.length === 0) return false
 
   const before = uploadSnapshot(element)
+  const originalElementIndex = getFillableElements().indexOf(element)
   const dataTransfer = new DataTransfer()
   for (const [index, assetUrl] of assetUrls.entries()) {
     const sourceFile = await fileFromAssetUrl(assetUrl, index)
@@ -939,22 +1573,44 @@ async function setFileInputValue(element: HTMLInputElement, value: unknown) {
       dataTransfer.items.add(optimized.file)
       console.info(`[ImageOptimizer] ${optimized.summary}`)
     } catch (error) {
-      console.warn('[ImageOptimizer] Could not optimize image; using the original file.', error)
-      dataTransfer.items.add(sourceFile)
+      console.warn('[ImageOptimizer] Could not produce an image that satisfies this field.', error)
+      throw error
     }
   }
 
   const expectedFileNames = Array.from(dataTransfer.files).map((file) => file.name)
   assignFiles(element, dataTransfer.files)
   dispatchFileEvents(element)
-  await wait(420)
-
-  if (!uploadWasAccepted(element, expectedFileNames, before)) {
+  let accepted = await waitForUploadAcceptance(element, expectedFileNames, before)
+  if (!accepted) {
     dispatchDropEvents(element, dataTransfer)
-    await wait(520)
+    accepted = await waitForUploadAcceptance(element, expectedFileNames, before)
   }
 
-  const accepted = uploadWasAccepted(element, expectedFileNames, before)
+  if (!accepted) {
+    // Controlled upload widgets may replace the original input after a
+    // synthetic change. Retry on the live control that owns the same field.
+    const key = element.id || element.name
+    const indexedElement = originalElementIndex >= 0
+      ? getFillableElements()[originalElementIndex]
+      : null
+    const liveElement = key ? findElementByKey(key) : indexedElement
+    if (
+      liveElement instanceof HTMLInputElement &&
+      liveElement.type === 'file' &&
+      liveElement !== element
+    ) {
+      assignFiles(liveElement, dataTransfer.files)
+      dispatchFileEvents(liveElement)
+      accepted = await waitForUploadAcceptance(liveElement, expectedFileNames, before)
+      if (!accepted) {
+        dispatchDropEvents(liveElement, dataTransfer)
+        accepted = await waitForUploadAcceptance(liveElement, expectedFileNames, before)
+      }
+      element = liveElement
+    }
+  }
+
   if (accepted) {
     acceptedFileInputNames.set(element, expectedFileNames)
     element.dispatchEvent(new Event('blur', { bubbles: true, composed: true }))
@@ -967,6 +1623,226 @@ async function setFileInputValue(element: HTMLInputElement, value: unknown) {
   }
 
   return accepted
+}
+
+async function setVirtualFileInputValue(element: HTMLElement, value: unknown) {
+  if (!isAssetFillValue(value) || value.assetUrls.length === 0) return false
+
+  const beforeText = compactWhitespace(element.innerText || element.textContent || '')
+  const dataTransfer = new DataTransfer()
+  for (const [index, assetUrl] of value.assetUrls.slice(0, 1).entries()) {
+    dataTransfer.items.add(await fileFromAssetUrl(assetUrl, index))
+  }
+  const directFileNames = Array.from(dataTransfer.files).map((file) => file.name)
+  const beforeDrop = virtualUploadSnapshot(element)
+  dispatchVirtualDropEvents(element, dataTransfer)
+  if (await waitForVirtualUploadAcceptance(element, directFileNames, beforeDrop, 1800)) {
+    acceptedVirtualFileNames.set(element, directFileNames)
+    return true
+  }
+
+  element.click()
+  await wait(360)
+
+  const pickerContext = compactWhitespace([
+    getLearningFieldLabel(element),
+    beforeText,
+    element.id,
+    element.getAttribute('name'),
+    element.getAttribute('aria-label')
+  ].filter(Boolean).join(' ')).slice(0, 600)
+
+  const response = await chrome.runtime.sendMessage({
+    action: 'fillVirtualFileInput',
+    assetUrls: value.assetUrls.slice(0, 1),
+    multiple: false,
+    pickerContext
+  })
+  if (!response?.success) {
+    console.warn('[FormFiller] Virtual upload picker could not be filled.', {
+      stage: 'picker_input',
+      field: beforeText,
+      error: response?.error || 'Unknown upload picker error'
+    })
+    return false
+  }
+
+  const fileNames = Array.isArray(response.fileNames)
+    ? response.fileNames.filter((name: unknown): name is string => typeof name === 'string')
+    : []
+  if (!await waitForVirtualUploadAcceptance(element, fileNames, beforeDrop)) {
+    console.warn('[FormFiller] Virtual picker did not update the intended upload control.', {
+      field: beforeText,
+      fileNames
+    })
+    return false
+  }
+  acceptedVirtualFileNames.set(element, fileNames)
+  return true
+}
+
+function virtualUploadEventTargets(element: HTMLElement) {
+  const candidates = [element]
+  let ancestor = element.parentElement
+  for (let depth = 0; ancestor && depth < 5; depth++) {
+    candidates.push(ancestor)
+    if (ancestor.matches('form, [role="dialog"]')) break
+    ancestor = ancestor.parentElement
+  }
+  return Array.from(new Set(candidates))
+}
+
+function virtualUploadSnapshot(element: HTMLElement) {
+  const targets = virtualUploadEventTargets(element)
+  const imageSignature = targets
+    .flatMap((target) => Array.from(target.querySelectorAll<HTMLImageElement>('img')))
+    .map((image) => image.currentSrc || image.src || image.alt)
+    .join('|')
+  return {
+    connected: element.isConnected,
+    childCount: targets.reduce((count, target) => count + target.querySelectorAll('*').length, 0),
+    imageSignature,
+    text: compactWhitespace(targets.map((target) => target.innerText || target.textContent || '').join(' ')).slice(0, 1600)
+  }
+}
+
+function virtualUploadAcceptanceEvidence(
+  element: HTMLElement,
+  expectedFileNames: string[],
+  before: ReturnType<typeof virtualUploadSnapshot>
+) {
+  const after = virtualUploadSnapshot(element)
+  const visibleFileName = expectedFileNames.some((name) => (
+    after.text.includes(name) || after.text.includes(name.replace(/\.[^.]+$/, ''))
+  ))
+  const previewChanged = Boolean(after.imageSignature) && after.imageSignature !== before.imageSignature
+  return {
+    accepted: after.connected && !uploadHasError(after.text) && (visibleFileName || previewChanged),
+    error: uploadHasError(after.text)
+  }
+}
+
+async function waitForVirtualUploadAcceptance(
+  element: HTMLElement,
+  expectedFileNames: string[],
+  before: ReturnType<typeof virtualUploadSnapshot>,
+  timeoutMs = 4000
+) {
+  const deadline = Date.now() + timeoutMs
+  let positiveSince = 0
+
+  while (Date.now() < deadline) {
+    if (!element.isConnected) return false
+    const evidence = virtualUploadAcceptanceEvidence(element, expectedFileNames, before)
+    if (evidence.error) return false
+    if (evidence.accepted) {
+      if (positiveSince === 0) positiveSince = Date.now()
+      if (Date.now() - positiveSince >= 650) return true
+    } else {
+      positiveSince = 0
+    }
+    await wait(180)
+  }
+
+  return false
+}
+
+function dispatchVirtualDropEvents(element: HTMLElement, dataTransfer: DataTransfer) {
+  const targets = virtualUploadEventTargets(element)
+  const target = targets.find((candidate) => {
+    const identity = [
+      candidate.id,
+      candidate.className,
+      candidate.getAttribute('data-testid'),
+      candidate.getAttribute('role'),
+      candidate.innerText || candidate.textContent || ''
+    ].filter(Boolean).join(' ')
+    return /\b(upload|drop[ -]?zone|drop files?|browse|choose file|attach)\b/i.test(identity)
+  }) || element
+
+  for (const type of ['dragenter', 'dragover', 'drop']) {
+    target.dispatchEvent(new DragEvent(type, {
+      bubbles: true,
+      cancelable: true,
+      composed: true,
+      dataTransfer
+    }))
+  }
+}
+
+function fileInputsInOpenRoots(root: Document | ShadowRoot = document): HTMLInputElement[] {
+  const inputs = Array.from(root.querySelectorAll<HTMLInputElement>('input[type="file"]'))
+  for (const element of Array.from(root.querySelectorAll<HTMLElement>('*'))) {
+    if (element.shadowRoot) inputs.push(...fileInputsInOpenRoots(element.shadowRoot))
+  }
+  return inputs
+}
+
+async function fillAvailableFileInput(
+  assets: StoredProductAsset[],
+  multiple: boolean,
+  pickerContext = ''
+) {
+  const inputs = fileInputsInOpenRoots().filter((input) => !input.disabled)
+  const compatibleInputs = inputs.filter((candidate) => {
+    if (!assets[0]) return true
+    const accept = candidate.accept.toLowerCase()
+    return !accept || accept.includes('image') || accept.includes(assets[0].mimeType.toLowerCase())
+  })
+  const desiredWords = new Set(
+    normalizeText(pickerContext).split(' ').filter((word) => word.length >= 3)
+  )
+  const rankedInputs = compatibleInputs
+    .map((candidate) => {
+      const contextWords = normalizeText(uploadContextFor(candidate)).split(' ')
+      const overlap = contextWords.filter((word) => desiredWords.has(word)).length
+      const newlyMounted = candidate.dataset.chat4oVirtualUploadSeen === 'true' ? 0 : 25
+      return { input: candidate, score: newlyMounted + overlap * 12 }
+    })
+    .sort((left, right) => right.score - left.score)
+  inputs.forEach((candidate) => { candidate.dataset.chat4oVirtualUploadSeen = 'true' })
+  if (
+    rankedInputs.length > 1 &&
+    rankedInputs[0].score < 25 &&
+    rankedInputs[0].score - rankedInputs[1].score < 12
+  ) {
+    return { success: false, error: 'Several upload controls match; the intended picker could not be identified safely.' }
+  }
+  const input = rankedInputs[0]?.input || inputs[0]
+  if (!input || assets.length === 0) return { success: false }
+
+  const dataTransfer = new DataTransfer()
+  const selectedAssets = input.multiple && multiple ? assets : assets.slice(0, 1)
+  for (const asset of selectedAssets) {
+    const response = await fetch(asset.dataUrl)
+    if (!response.ok) return { success: false }
+    const blob = await response.blob()
+    const sourceFile = new File([blob], asset.fileName, {
+      type: asset.mimeType || blob.type || mimeTypeFromFileName(asset.fileName)
+    })
+    try {
+      const optimized = await optimizeImageForInput(sourceFile, input)
+      dataTransfer.items.add(optimized.file)
+    } catch (error) {
+      console.warn('[ImageOptimizer] Could not produce an image that satisfies the picker field.', error)
+      throw error
+    }
+  }
+
+  const before = uploadSnapshot(input)
+  const fileNames = Array.from(dataTransfer.files).map((file) => file.name)
+  assignFiles(input, dataTransfer.files)
+  dispatchFileEvents(input)
+  let accepted = await waitForUploadAcceptance(input, fileNames, before)
+  if (!accepted) {
+    dispatchDropEvents(input, dataTransfer)
+    accepted = await waitForUploadAcceptance(input, fileNames, before)
+  }
+
+  return {
+    success: accepted,
+    fileNames
+  }
 }
 
 function shortenToLimit(value: string, maxLength?: number) {
@@ -1035,7 +1911,7 @@ async function applyPostFillLengthLimit(
 }
 
 function normalizeText(value: string) {
-  return value.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim()
+  return value.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim()
 }
 
 function scoreOption(optionLabel: string, desiredValue: string) {
@@ -1043,52 +1919,149 @@ function scoreOption(optionLabel: string, desiredValue: string) {
   const desired = normalizeText(desiredValue)
   if (!option || !desired) return 0
   if (option === desired) return 100
-  if (desired.includes(option) || option.includes(desired)) return 80
+  if (
+    Math.min(desired.length, option.length) >= 5 &&
+    (desired.includes(option) || option.includes(desired))
+  ) return 80
 
   const desiredWords = new Set(desired.split(' ').filter((word) => word.length > 2))
   const optionWords = option.split(' ').filter((word) => word.length > 2)
-  return optionWords.reduce((score, word) => score + (desiredWords.has(word) ? 12 : 0), 0)
+  const overlap = optionWords.filter((word) => desiredWords.has(word)).length
+  const coverage = overlap / Math.max(1, Math.min(optionWords.length, desiredWords.size))
+  return overlap >= 1 && coverage >= 0.67 ? 50 + Math.round(coverage * 30) : 0
 }
 
 function findBestOption(options: Array<{ label: string; value: string }>, desiredValue: string) {
-  return options
+  const ranked = options
     .map((option) => ({ ...option, score: scoreOption(option.label, desiredValue) }))
     .sort((a, b) => b.score - a.score)[0]
+
+  if (!ranked || ranked.score < 70) return null
+  const secondScore = options
+    .map((option) => scoreOption(option.label, desiredValue))
+    .sort((a, b) => b - a)[1] || 0
+  if (ranked.score < 100 && ranked.score - secondScore < 8) return null
+  return ranked
+}
+
+async function setRadioGroupValue(element: HTMLInputElement, value: unknown) {
+  const desiredValue = String(value ?? '')
+  const candidates = element.name
+    ? Array.from(document.querySelectorAll<HTMLInputElement>('input[type="radio"]'))
+        .filter((candidate) => candidate.name === element.name && candidate.form === element.form && !candidate.disabled)
+    : [element]
+  const ranked = candidates
+    .map((candidate) => ({
+      element: candidate,
+      score: Math.max(
+        scoreOption(getRadioOptionLabel(candidate), desiredValue),
+        scoreOption(candidate.getAttribute('aria-label') || '', desiredValue),
+        scoreOption(candidate.value, desiredValue)
+      )
+    }))
+    .sort((left, right) => right.score - left.score)
+  const best = ranked[0]
+  if (!best || best.score < 70 || (best.score < 100 && best.score - (ranked[1]?.score || 0) < 8)) return false
+
+  const checkedSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'checked')?.set
+  candidates.forEach((candidate) => checkedSetter?.call(candidate, candidate === best.element))
+  best.element.dispatchEvent(new Event('input', { bubbles: true }))
+  best.element.dispatchEvent(new Event('change', { bubbles: true }))
+  best.element.dispatchEvent(new Event('blur', { bubbles: true }))
+  await wait(80)
+  return best.element.checked
 }
 
 function getVisibleOptionElements() {
-  return Array.from(document.querySelectorAll('[role="option"], [data-combobox-option], [data-option]')) as HTMLElement[]
+  return (Array.from(document.querySelectorAll('[role="option"], [data-combobox-option], [data-option]')) as HTMLElement[])
+    .filter((element) => {
+      const style = window.getComputedStyle(element)
+      const rect = element.getBoundingClientRect()
+      return style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0 && rect.height > 0
+    })
 }
 
-function findBestVisibleOption(desiredValue: string) {
-  return getVisibleOptionElements()
+function ownedVisibleOptionElements(element: HTMLElement) {
+  const controlledIds = [element.getAttribute('aria-controls'), element.getAttribute('aria-owns')]
+    .flatMap((value) => String(value || '').split(/\s+/))
+    .filter(Boolean)
+  const roots = controlledIds
+    .map((id) => document.getElementById(id))
+    .filter((root): root is HTMLElement => root instanceof HTMLElement)
+
+  if (roots.length > 0) {
+    const options = roots.flatMap((root) => (
+      root.matches('[role="option"], [data-combobox-option], [data-option]')
+        ? [root]
+        : Array.from(root.querySelectorAll<HTMLElement>('[role="option"], [data-combobox-option], [data-option]'))
+    ))
+    return options.filter((option) => getVisibleOptionElements().includes(option))
+  }
+
+  const visibleListboxes = Array.from(document.querySelectorAll<HTMLElement>('[role="listbox"]'))
+    .filter((listbox) => {
+      const style = window.getComputedStyle(listbox)
+      const rect = listbox.getBoundingClientRect()
+      return style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0 && rect.height > 0
+    })
+  if (visibleListboxes.length !== 1) return []
+  return Array.from(visibleListboxes[0].querySelectorAll<HTMLElement>(
+    '[role="option"], [data-combobox-option], [data-option]'
+  )).filter((option) => getVisibleOptionElements().includes(option))
+}
+
+function ownedScrollableOptionContainers(element: HTMLElement) {
+  return Array.from(new Set(
+    ownedVisibleOptionElements(element).flatMap((option) => {
+      const result: HTMLElement[] = []
+      let current = option.parentElement
+      while (current && current !== document.body) {
+        if (isScrollable(current)) result.push(current)
+        current = current.parentElement
+      }
+      return result
+    })
+  ))
+}
+
+function findBestVisibleOption(element: HTMLElement, desiredValue: string) {
+  const ranked = ownedVisibleOptionElements(element)
     .map((option) => ({
       element: option,
       label: option.textContent?.trim() || '',
+      value: option.getAttribute('data-value') || option.textContent?.trim() || '',
       score: scoreOption(option.textContent?.trim() || '', desiredValue)
     }))
-    .sort((a, b) => b.score - a.score)[0]
+    .sort((a, b) => b.score - a.score)
+  const best = ranked[0]
+  if (!best || best.score < 70) return null
+  if (best.score < 100 && best.score - (ranked[1]?.score || 0) < 8) return null
+  return best
 }
 
-async function clickBestCustomOption(desiredValue: string) {
-  let bestOption = findBestVisibleOption(desiredValue)
-  if (bestOption?.score > 0) {
+async function clickBestCustomOption(element: HTMLElement, desiredValue: string) {
+  let bestOption = findBestVisibleOption(element, desiredValue)
+  if (bestOption) {
+    const selectedLabel = bestOption.label
     bestOption.element.click()
     await wait(120)
+    acceptedCustomSelectValues.set(element, selectedLabel)
     return true
   }
 
-  const containers = getScrollableOptionContainers()
+  const containers = ownedScrollableOptionContainers(element)
   for (const container of containers.slice(0, 3)) {
     const originalScrollTop = container.scrollTop
     container.scrollTop = 0
     await wait(40)
 
     for (let step = 0; step < 35; step++) {
-      bestOption = findBestVisibleOption(desiredValue)
-      if (bestOption?.score > 0) {
+      bestOption = findBestVisibleOption(element, desiredValue)
+      if (bestOption) {
+        const selectedLabel = bestOption.label
         bestOption.element.click()
         await wait(120)
+        acceptedCustomSelectValues.set(element, selectedLabel)
         return true
       }
 
@@ -1110,7 +2083,7 @@ async function setSelectValue(element: HTMLSelectElement | HTMLElement, value: u
   if (element instanceof HTMLSelectElement) {
     const options = getSelectOptions(element)
     const bestOption = findBestOption(options, desiredValue)
-    if (bestOption?.score > 0) {
+    if (bestOption) {
       const optionIndex = options.findIndex((option) => (
         option.value === bestOption.value && option.label === bestOption.label
       ))
@@ -1134,7 +2107,21 @@ async function setSelectValue(element: HTMLSelectElement | HTMLElement, value: u
   element.click()
   await wait(180)
 
-  return clickBestCustomOption(desiredValue)
+  return clickBestCustomOption(element, desiredValue)
+}
+
+async function setAriaCheckboxValue(element: HTMLElement, value: unknown) {
+  const desired = strictBooleanValue(value)
+  if (desired === null) return false
+  if (desired && isUnsafeOptionalCheckboxControl(element)) return false
+
+  const current = ariaCheckboxState(element)
+  if (current === null) return false
+  if (current !== desired) {
+    element.click()
+    await wait(100)
+  }
+  return ariaCheckboxState(element) === desired
 }
 
 async function setFieldValue(
@@ -1145,24 +2132,47 @@ async function setFieldValue(
     return setFileInputValue(element, value)
   }
 
+  if (isVirtualFileControl(element)) {
+    return setVirtualFileInputValue(element, value)
+  }
+
+  if (isVirtualPlanChoiceControl(element)) {
+    return setVirtualPlanChoiceValue(element, value)
+  }
+
+  if (element instanceof HTMLInputElement && element.type === 'radio') {
+    return setRadioGroupValue(element, value)
+  }
+
+  if (isAriaCheckboxControl(element)) {
+    return setAriaCheckboxValue(element, value)
+  }
+
+  if (element instanceof HTMLInputElement && element.type === 'checkbox') {
+    const desired = strictBooleanValue(value)
+    if (desired === null || (desired && isUnsafeOptionalCheckboxControl(element))) return false
+  }
+
+  if (!isScalarFillValue(value)) return false
+
   const constrainedValue = constrainValueForField(element, value)
 
-  if (element instanceof HTMLSelectElement || element.getAttribute('role') === 'combobox') {
+  if (element instanceof HTMLSelectElement || isCustomSelectControl(element)) {
     const selected = await setSelectValue(element, constrainedValue)
     if (selected) return true
+    if (isCustomSelectControl(element)) return false
   }
 
   if (element instanceof HTMLTextAreaElement && setRichTextValue(element, constrainedValue)) {
     return true
   }
 
-  if (element.isContentEditable && setContentEditableValue(element, constrainedValue)) {
+  if (isEditableContentControl(element) && setContentEditableValue(element, constrainedValue)) {
     return true
   }
 
   if (element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement || element instanceof HTMLSelectElement) {
-    setNativeValue(element, constrainedValue)
-    return true
+    return setNativeValue(element, constrainedValue)
   }
 
   return false
@@ -1170,12 +2180,34 @@ async function setFieldValue(
 
 function getCurrentValue(element: HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement | HTMLElement) {
   if (element instanceof HTMLInputElement && element.type === 'file') {
-    const currentNames = fileNamesFromInput(element)
-    return (currentNames.length > 0 ? currentNames : acceptedFileInputNames.get(element) || []).join(', ')
+    return (acceptedFileInputNames.get(element) || []).join(', ')
   }
 
-  if (element instanceof HTMLInputElement && (element.type === 'checkbox' || element.type === 'radio')) {
+  if (isVirtualFileControl(element)) {
+    return (acceptedVirtualFileNames.get(element) || []).join(', ')
+  }
+
+  if (isVirtualPlanChoiceControl(element)) {
+    return currentVirtualPlanChoice(element)
+  }
+
+  if (element instanceof HTMLInputElement && element.type === 'radio') {
+    const selected = getSelectedRadio(element)
+    return selected ? getFieldLabel(selected) || selected.getAttribute('aria-label') || selected.value : ''
+  }
+
+  if (element instanceof HTMLInputElement && element.type === 'checkbox') {
     return String(element.checked)
+  }
+
+  if (isAriaCheckboxControl(element)) {
+    return String(ariaCheckboxState(element) === true)
+  }
+
+  if (isCustomSelectControl(element)) {
+    return acceptedCustomSelectValues.get(element) || (
+      element instanceof HTMLInputElement ? element.value : compactWhitespace(element.innerText || element.textContent || '')
+    )
   }
 
   if (element instanceof HTMLSelectElement) {
@@ -1196,11 +2228,16 @@ function getSelectedRadio(element: HTMLInputElement) {
     .find((candidate): candidate is HTMLInputElement => (
       candidate instanceof HTMLInputElement &&
       candidate.name === element.name &&
+      candidate.form === element.form &&
       candidate.checked
     )) || null
 }
 
 function getLearningValue(element: HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement | HTMLElement) {
+  if (isVirtualPlanChoiceControl(element)) {
+    return currentVirtualPlanChoice(element)
+  }
+
   if (element instanceof HTMLInputElement && element.type === 'radio') {
     const selected = getSelectedRadio(element)
     if (!selected) return ''
@@ -1210,6 +2247,11 @@ function getLearningValue(element: HTMLInputElement | HTMLTextAreaElement | HTML
   if (element instanceof HTMLInputElement && element.type === 'checkbox') {
     if (!element.checked) return ''
     return getFieldLabel(element) || element.value || 'Yes'
+  }
+
+  if (isAriaCheckboxControl(element)) {
+    if (ariaCheckboxState(element) !== true) return ''
+    return getFieldLabel(element) || element.getAttribute('aria-label') || 'Yes'
   }
 
   if (element instanceof HTMLSelectElement) {
@@ -1277,12 +2319,30 @@ function valueLooksFilled(
   const currentValue = getCurrentValue(element).trim()
   const expectedValue = String(intendedValue ?? '').trim()
 
-  if (element instanceof HTMLInputElement && (element.type === 'checkbox' || element.type === 'radio')) {
-    return currentValue === String(Boolean(intendedValue))
+  if ((element instanceof HTMLInputElement && (element.type === 'checkbox' || element.type === 'radio')) || isAriaCheckboxControl(element)) {
+    if (isAriaCheckboxControl(element)) {
+      const expectedChecked = strictBooleanValue(intendedValue)
+      return expectedChecked !== null && ariaCheckboxState(element) === expectedChecked
+    }
+    if (element instanceof HTMLInputElement && element.type === 'radio') {
+      return normalizeText(currentValue) === normalizeText(String(intendedValue ?? ''))
+    }
+    const expectedChecked = strictBooleanValue(intendedValue)
+    return expectedChecked !== null && currentValue === String(expectedChecked)
   }
 
   if (element instanceof HTMLInputElement && element.type === 'file') {
     return (element.files?.length || 0) > 0 || acceptedFileInputNames.has(element)
+  }
+
+  if (isVirtualFileControl(element)) {
+    return acceptedVirtualFileNames.has(element)
+  }
+
+  if (isVirtualPlanChoiceControl(element)) {
+    const group = virtualPlanChoiceGroupFor(element)
+    const option = group ? findSafeVirtualPlanOption(group, intendedValue) : null
+    return Boolean(option && normalizeText(currentVirtualPlanChoice(element)) === normalizeText(option.label))
   }
 
   if (!expectedValue) return currentValue.length === 0
@@ -1290,11 +2350,21 @@ function valueLooksFilled(
 
   const normalizedCurrent = normalizeText(currentValue)
   const normalizedExpected = normalizeText(expectedValue)
-  return (
-    normalizedCurrent === normalizedExpected ||
-    normalizedCurrent.includes(normalizedExpected) ||
-    normalizedExpected.includes(normalizedCurrent)
-  )
+  return normalizedCurrent === normalizedExpected
+}
+
+function liveValidationError(
+  element: HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement | HTMLElement
+) {
+  if (element.getAttribute('aria-invalid') === 'true') return true
+  if (
+    element instanceof HTMLInputElement ||
+    element instanceof HTMLTextAreaElement ||
+    element instanceof HTMLSelectElement
+  ) {
+    return !element.checkValidity()
+  }
+  return false
 }
 
 function isEmailValue(value: unknown) {
@@ -1341,13 +2411,17 @@ function getFieldForKey(key: string): ExtractedFormField {
   const element = findElementByKey(key) || fillableElements[fallbackIndex]
   const elementIndex = fillableElements.indexOf(element)
   const existingField = lastExtractedFields.find((field) => field.id === key || field.name === key)
-  const fieldType = element && element.getAttribute('role') === 'combobox'
-    ? 'select'
-    : element && (element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement || element instanceof HTMLSelectElement)
-      ? element.type || 'text'
-      : element?.isContentEditable
-        ? 'richtext'
-        : 'text'
+  const fieldType = element && isVirtualFileControl(element)
+    ? 'file'
+    : element && isVirtualPlanChoiceControl(element)
+      ? 'select'
+    : element && isCustomSelectControl(element)
+      ? 'select'
+      : element && (element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement || element instanceof HTMLSelectElement)
+        ? element.type || 'text'
+        : element && isEditableContentControl(element)
+          ? 'richtext'
+          : 'text'
 
   return {
     ...(existingField || {}),
@@ -1356,14 +2430,18 @@ function getFieldForKey(key: string): ExtractedFormField {
     type: fieldType,
     tagName: element?.tagName.toLowerCase() || 'input',
     placeholder: (element as HTMLInputElement | undefined)?.placeholder || '',
-    label: element ? getFieldLabel(element) : '',
+    label: element ? getExtractedFieldLabel(element) : '',
     context: element ? getFieldContext(element) : '',
     maxLength: element ? inferFieldMaxLength(element) : undefined,
     value: element ? getCurrentValue(element) : '',
-    required: element ? (element as HTMLInputElement).required || false : false,
+    required: element
+      ? (element instanceof HTMLInputElement && element.required) ||
+        element.getAttribute('aria-required') === 'true' ||
+        (isAriaCheckboxControl(element) && element.closest('[aria-required="true"]') !== null)
+      : false,
     elementIndex: elementIndex >= 0 ? elementIndex : fallbackIndex,
     options: element ? getSelectOptions(element) : [],
-    isCustomSelect: element?.getAttribute('role') === 'combobox'
+    isCustomSelect: element ? isCustomSelectControl(element) : false
   }
 }
 
@@ -1998,22 +3076,34 @@ function attachLearnControlsForUnfilledFields(filledKeys: Set<string>) {
   })
 }
 
-window.addEventListener('scroll', updateAllControlPositions, true)
-window.addEventListener('resize', updateAllControlPositions)
-document.addEventListener('click', closeAllMenus)
-window.addEventListener('focus', reportFillableTabActivity)
-document.addEventListener('pointerdown', reportFillableTabActivity, true)
-document.addEventListener('visibilitychange', () => {
-  if (!document.hidden) reportFillableTabActivity()
-})
+const formHandlerRuntimeWindow = window as Window & {
+  __chat4oFormHandlerRuntime?: boolean
+}
+const isFirstFormHandlerRuntime = !formHandlerRuntimeWindow.__chat4oFormHandlerRuntime
 
-const controlObserver = new MutationObserver(() => {
-  if (filledFieldRecords.size > 0 || learnFieldControls.size > 0) {
-    scheduleFieldControlRefresh()
-  }
-})
-controlObserver.observe(document.documentElement, { childList: true, subtree: true })
-reportFillableTabActivity()
+// `ensureFormContentScript` may inject this file again when a page is still
+// mounting. Register the observers and message listener only once; duplicate
+// listeners would execute every fill command multiple times on the same input.
+if (isFirstFormHandlerRuntime) {
+  formHandlerRuntimeWindow.__chat4oFormHandlerRuntime = true
+
+  window.addEventListener('scroll', updateAllControlPositions, true)
+  window.addEventListener('resize', updateAllControlPositions)
+  document.addEventListener('click', closeAllMenus)
+  window.addEventListener('focus', reportFillableTabActivity)
+  document.addEventListener('pointerdown', reportFillableTabActivity, true)
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden) reportFillableTabActivity()
+  })
+
+  const controlObserver = new MutationObserver(() => {
+    if (filledFieldRecords.size > 0 || learnFieldControls.size > 0) {
+      scheduleFieldControlRefresh()
+    }
+  })
+  controlObserver.observe(document.documentElement, { childList: true, subtree: true })
+  reportFillableTabActivity()
+}
 
 // Fill form fields with provided data
 async function fillForm(
@@ -2040,7 +3130,7 @@ async function fillForm(
       await wait(180)
       const lengthLimitedValue = await applyPostFillLengthLimit(element, value)
       let finalValue = value
-      let verified = filled && valueLooksFilled(element, lengthLimitedValue)
+      let verified = filled && valueLooksFilled(element, lengthLimitedValue) && !liveValidationError(element)
       const fallbackValue = fallbackData[key]
 
       if (
@@ -2052,7 +3142,7 @@ async function fillForm(
       ) {
         const fallbackFilled = await setFieldValue(element, fallbackValue)
         await wait(120)
-        if (fallbackFilled && valueLooksFilled(element, fallbackValue)) {
+        if (fallbackFilled && valueLooksFilled(element, fallbackValue) && !liveValidationError(element)) {
           finalValue = fallbackValue
           verified = true
         }
@@ -2130,31 +3220,55 @@ async function fillForm(
 }
 
 // Listen for messages from background script
-chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
-  console.log('[FormContent] Received message:', message.action)
+if (isFirstFormHandlerRuntime) {
+  let activeFillPromise: ReturnType<typeof fillForm> | null = null
 
-  if (message.action === 'chat4oPing') {
-    sendResponse({ success: true })
+  chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+    console.log('[FormContent] Received message:', message.action)
+
+    if (message.action === 'chat4oPing') {
+      sendResponse({ success: true })
+      return false
+    }
+
+    if (message.action === 'extractFormFields') {
+      extractFormFields().then(sendResponse).catch((error) => {
+        console.error('[FormContent] Extract error:', error)
+        sendResponse([])
+      })
+      return true
+    }
+
+    if (message.action === 'fillForm') {
+      // If two popup instances request the same tab at once, share the active
+      // fill instead of starting another writer against the same controls.
+      activeFillPromise ||= fillForm(message.data, message.mappings, message.fallbackData)
+        .finally(() => {
+          activeFillPromise = null
+        })
+      activeFillPromise.then(sendResponse).catch((error) => {
+        console.error('[FormContent] Fill error:', error)
+        sendResponse({ success: false, error: (error as Error).message })
+      })
+      return true
+    }
+
+    if (message.action === 'fillAvailableFileInput') {
+      fillAvailableFileInput(
+        message.assets || [],
+        Boolean(message.multiple),
+        String(message.pickerContext || '')
+      )
+        .then(sendResponse)
+        .catch((error) => {
+          console.warn('[FormFiller] Available file input fill failed.', error)
+          sendResponse({ success: false, error: (error as Error).message })
+        })
+      return true
+    }
+
     return false
-  }
-
-  if (message.action === 'extractFormFields') {
-    extractFormFields().then(sendResponse).catch((error) => {
-      console.error('[FormContent] Extract error:', error)
-      sendResponse([])
-    })
-    return true
-  }
-
-  if (message.action === 'fillForm') {
-    fillForm(message.data, message.mappings, message.fallbackData).then(sendResponse).catch((error) => {
-      console.error('[FormContent] Fill error:', error)
-      sendResponse({ success: false, error: (error as Error).message })
-    })
-    return true
-  }
-
-  return false
-})
+  })
+}
 
 console.log('[FormContent] Form content script loaded')

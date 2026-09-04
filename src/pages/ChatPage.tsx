@@ -45,6 +45,21 @@ function createFormFillRequestId() {
 
   return `fill_${Date.now()}_${Math.random().toString(36).slice(2, 11)}`
 }
+
+function getInitialAutoFillParams() {
+  const searchParams = new URLSearchParams(window.location.search)
+  const hashQuery = window.location.hash.split('?')[1]
+  const hashParams = hashQuery ? new URLSearchParams(hashQuery) : null
+  const hasNavigationRequest = Boolean(
+    searchParams.get('autoFillRequestId') || hashParams?.get('autoFillRequestId')
+  )
+
+  return {
+    requested: searchParams.get('autoFill') === '1' && !hasNavigationRequest,
+    targetTabId: Number(searchParams.get('targetTabId')) || undefined
+  }
+}
+
 async function getTargetTab() {
   const response = await chrome.runtime.sendMessage({ action: 'getTargetTab' })
   if (!response?.success || !response.tab?.id) {
@@ -72,8 +87,9 @@ export const ChatPage = () => {
   const messages = getCurrentMessages()
   const [showFormFillDialog, setShowFormFillDialog] = useState(false)
   const [activeFillCount, setActiveFillCount] = useState(0)
-  const autoFillRequestedRef = useRef(new URLSearchParams(window.location.search).get('autoFill') === '1')
-  const initialAutoFillTargetTabIdRef = useRef(Number(new URLSearchParams(window.location.search).get('targetTabId')) || undefined)
+  const initialAutoFillParamsRef = useRef(getInitialAutoFillParams())
+  const autoFillRequestedRef = useRef(initialAutoFillParamsRef.current.requested)
+  const initialAutoFillTargetTabIdRef = useRef(initialAutoFillParamsRef.current.targetTabId)
   const autoFillStartedRef = useRef(false)
   const handledNavigationAutoFillRef = useRef<string | null>(null)
   const activeFillRunsRef = useRef(new Map<string, ActiveFormFillRun>())
@@ -129,6 +145,10 @@ export const ChatPage = () => {
   }
 
   const handleFormFillConfirm = async (forceFill = false, targetTabId?: number) => {
+    // Never run two autofill pipelines against the same page at once. Multiple
+    // concurrent writers make controlled inputs appear to type and erase text.
+    if (activeFillRunsRef.current.size > 0) return
+
     // Create session if needed
     let sessionId = currentSessionId
     if (!sessionId) {
@@ -217,14 +237,19 @@ export const ChatPage = () => {
       // Final success message
       const actualFilledCount = fillResult.filledCount
       const failedCount = fillResult.failedKeys?.length || 0
-      const resultDetails = failedCount > 0
-        ? `\n\n还有 ${failedCount} 个字段没有成功写入，已在网页字段旁显示 + 学习按钮。`
-        : ''
+      const requiredCount = fillResult.remainingRequiredKeys?.length || 0
+      const invalidCount = fillResult.remainingInvalidKeys?.length || 0
+      const emptyEligibleCount = fillResult.emptyEligibleKeys?.length || 0
+      const resultDetails = failedCount > 0 || requiredCount > 0 || invalidCount > 0
+        ? `\n\n已填完可确认的字段，但仍需人工复核：${requiredCount} 个必填项为空，${invalidCount} 个字段未通过网页校验，${failedCount} 个写入尝试失败。网页字段旁已显示 + 学习按钮。`
+        : emptyEligibleCount > 0
+          ? `\n\n必填项已通过校验；另有 ${emptyEligibleCount} 个非必填/无安全资料字段保持未填，等待你复核。`
+          : ''
       const forceFallbackDetails = forceFill && (fillResult.forcedFallbackCount || 0) > 0
         ? `\n已使用已保存资料补充匹配 ${fillResult.forcedFallbackCount} 个字段。`
         : ''
       updateMessage(sessionId, aiMessageId, {
-        content: `✅ 表单填充完成!\n\n目标页面：${tab.url}\n${forceFill ? '本次使用强制填充模式。\n' : ''}已使用推广资料成功填充 ${actualFilledCount} 个表单字段。${forceFallbackDetails}${resultDetails}`,
+        content: `✅ 表单已填充，等待复核（未提交）\n\n目标页面：${tab.url}\n${forceFill ? '本次使用强制填充模式。\n' : ''}已使用推广资料成功填充 ${actualFilledCount} 个表单字段。${forceFallbackDetails}${resultDetails}`,
         thinking: `${forceFill ? '强制模式：页面类型检查已跳过' : '分析页面结构... ✓'}\n匹配推广资料... ✓\n生成填充数据... ✓\n填充表单... ✓`,
         isStreaming: false
       })
@@ -255,19 +280,29 @@ export const ChatPage = () => {
   useEffect(() => {
     if (!hasHydrated || !productProfile?.productName || !productProfile?.websiteUrl) return
 
+    const navigationState = getHashAutoFillRequest(location.search)
+      || location.state as AutoFillNavigationState | null
+    const requestId = navigationState?.autoFillRequestId
+
+    // A reused popup can contain both the legacy top-level autoFill query and
+    // a newer hash navigation request. Prefer the request id and start exactly
+    // one pipeline for the navigation.
+    if (requestId) {
+      if (handledNavigationAutoFillRef.current !== requestId) {
+        handledNavigationAutoFillRef.current = requestId
+        if (!autoFillStartedRef.current) {
+          autoFillStartedRef.current = true
+          void handleFormFillConfirmRef.current(false, navigationState.autoFillTargetTabId)
+        }
+        navigate('/chat', { replace: true, state: null })
+      }
+      return
+    }
+
     if (autoFillRequestedRef.current && !autoFillStartedRef.current) {
       autoFillStartedRef.current = true
       void handleFormFillConfirmRef.current(false, initialAutoFillTargetTabIdRef.current)
     }
-
-    const navigationState = getHashAutoFillRequest(location.search)
-      || location.state as AutoFillNavigationState | null
-    const requestId = navigationState?.autoFillRequestId
-    if (!requestId || handledNavigationAutoFillRef.current === requestId) return
-
-    handledNavigationAutoFillRef.current = requestId
-    void handleFormFillConfirmRef.current(false, navigationState.autoFillTargetTabId)
-    navigate('/chat', { replace: true, state: null })
   }, [hasHydrated, location.key, location.search, location.state, navigate, productProfile])
 
   const fillCurrentPageButton = (

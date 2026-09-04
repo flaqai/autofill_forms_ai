@@ -6,6 +6,135 @@ const fillableTabActivity = new Map<number, number>()
 const ignoredTargetTabs = new Set<number>()
 let standaloneWindowId: number | null = null
 
+interface ResolvedUploadAsset {
+  dataUrl: string
+  fileName: string
+  mimeType: string
+}
+
+const STORED_PRODUCT_ASSET_PREFIX = 'stored-product-asset://'
+const STORED_PRODUCT_ASSET_STORAGE_PREFIX = 'chat4o-product-asset:'
+const MAX_UPLOAD_ASSET_BYTES = 20 * 1024 * 1024
+
+function uploadFileName(assetUrl: string, index: number) {
+  const cleanUrl = assetUrl.split(/[?#]/)[0]
+  return cleanUrl.split('/').pop() || `product-image-${index + 1}.png`
+}
+
+function mimeTypeFromUploadFileName(fileName: string) {
+  const extension = fileName.split('.').pop()?.toLowerCase()
+  if (extension === 'jpg' || extension === 'jpeg') return 'image/jpeg'
+  if (extension === 'webp') return 'image/webp'
+  if (extension === 'gif') return 'image/gif'
+  return 'image/png'
+}
+
+function arrayBufferToBase64(buffer: ArrayBuffer) {
+  const bytes = new Uint8Array(buffer)
+  let binary = ''
+  const chunkSize = 0x8000
+  for (let offset = 0; offset < bytes.length; offset += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(offset, offset + chunkSize))
+  }
+  return btoa(binary)
+}
+
+async function resolveUploadAsset(assetUrl: string, index: number): Promise<ResolvedUploadAsset> {
+  if (assetUrl.startsWith(STORED_PRODUCT_ASSET_PREFIX)) {
+    const assetId = assetUrl.slice(STORED_PRODUCT_ASSET_PREFIX.length)
+    const storageKey = `${STORED_PRODUCT_ASSET_STORAGE_PREFIX}${assetId}`
+    const result = await chrome.storage.local.get(storageKey)
+    const storedAsset = result[storageKey] as ResolvedUploadAsset | undefined
+    if (!storedAsset?.dataUrl) {
+      throw new Error('Saved product image is no longer available. Please choose it again in Settings.')
+    }
+    return storedAsset
+  }
+
+  const resolvedUrl = /^(https?:|data:|blob:|chrome-extension:)/i.test(assetUrl)
+    ? assetUrl
+    : chrome.runtime.getURL(assetUrl.replace(/^\/+/, ''))
+  if (/^https?:/i.test(resolvedUrl)) {
+    const parsedUrl = new URL(resolvedUrl)
+    if (parsedUrl.username || parsedUrl.password) {
+      throw new Error('Image URLs containing credentials are not supported.')
+    }
+  }
+
+  const response = await fetch(resolvedUrl, {
+    credentials: 'omit',
+    referrerPolicy: 'no-referrer'
+  })
+  if (!response.ok) throw new Error(`Failed to load asset: ${assetUrl}`)
+
+  const contentLength = Number(response.headers.get('content-length') || 0)
+  if (contentLength > MAX_UPLOAD_ASSET_BYTES) {
+    throw new Error('Product image is larger than the 20MB safety limit.')
+  }
+
+  const buffer = await response.arrayBuffer()
+  if (buffer.byteLength > MAX_UPLOAD_ASSET_BYTES) {
+    throw new Error('Product image is larger than the 20MB safety limit.')
+  }
+
+  const fileName = uploadFileName(assetUrl, index)
+  const mimeType = response.headers.get('content-type')?.split(';')[0] || mimeTypeFromUploadFileName(fileName)
+  return {
+    dataUrl: `data:${mimeType};base64,${arrayBufferToBase64(buffer)}`,
+    fileName,
+    mimeType
+  }
+}
+
+async function fillVirtualFileInputInTab(
+  tabId: number,
+  sourceFrameId: number,
+  assetUrls: string[],
+  multiple: boolean,
+  pickerContext = ''
+) {
+  const selectedUrls = multiple ? assetUrls : assetUrls.slice(0, 1)
+  const assets = await Promise.all(selectedUrls.map(resolveUploadAsset))
+
+  for (let attempt = 0; attempt < 8; attempt++) {
+    const frames = await chrome.webNavigation.getAllFrames({ tabId }) || []
+    const allowedFrameIds = new Set([sourceFrameId])
+    let foundDescendant = true
+    while (foundDescendant) {
+      foundDescendant = false
+      for (const frame of frames) {
+        if (!allowedFrameIds.has(frame.frameId) && allowedFrameIds.has(frame.parentFrameId)) {
+          allowedFrameIds.add(frame.frameId)
+          foundDescendant = true
+        }
+      }
+    }
+    const scopedFrames = frames
+      .filter((frame) => allowedFrameIds.has(frame.frameId))
+      .sort((left, right) => {
+        if (left.frameId === sourceFrameId) return -1
+        if (right.frameId === sourceFrameId) return 1
+        return right.frameId - left.frameId
+      })
+    for (const frame of scopedFrames) {
+      try {
+        const result = await chrome.tabs.sendMessage(tabId, {
+          action: 'fillAvailableFileInput',
+          assets,
+          multiple,
+          pickerContext
+        }, { frameId: frame.frameId })
+        if (result?.success) return result
+      } catch {
+        // A newly mounted picker frame may not have its content script yet.
+      }
+    }
+    await new Promise((resolve) => setTimeout(resolve, 250))
+  }
+
+  return { success: false, error: 'The upload picker did not expose a usable file input.' }
+}
+
 function isFillableUrl(url?: string) {
   return Boolean(url && /^https?:\/\//.test(url))
 }
@@ -95,6 +224,23 @@ function getStandaloneUrl(
   return chrome.runtime.getURL(`sidepanel.html?${params.toString()}`)
 }
 
+function getDockedAutoFillPath(targetTabId: number) {
+  const params = new URLSearchParams({
+    autoFill: '1',
+    targetTabId: String(targetTabId)
+  })
+  return `sidepanel.html?${params.toString()}`
+}
+
+async function openDockedAutoFillSidePanel(targetTabId: number) {
+  await chrome.sidePanel.setOptions({
+    tabId: targetTabId,
+    path: getDockedAutoFillPath(targetTabId),
+    enabled: true
+  })
+  await chrome.sidePanel.open({ tabId: targetTabId })
+}
+
 function isStandaloneExtensionUrl(url?: string) {
   if (!url?.startsWith(chrome.runtime.getURL('sidepanel.html'))) return false
 
@@ -121,7 +267,10 @@ function getStandaloneAutoFillUrl(currentUrl: string, targetTabId: number) {
 async function findStandaloneWindows() {
   const windows = await chrome.windows.getAll({
     populate: true,
-    windowTypes: ['popup', 'normal']
+    // Only reuse actual popup windows. A previous compatibility fallback may
+    // have opened a normal extension tab; treating that tab as the standalone
+    // window would keep the UI full-screen forever.
+    windowTypes: ['popup']
   })
 
   return windows
@@ -153,10 +302,15 @@ async function focusStandaloneWindow(windowId: number, anchorWindowId?: number) 
     // The focused update below reports a useful error when the window is gone.
   }
 
-  await chrome.windows.update(windowId, {
-    focused: true,
-    ...(await getPopupBounds(anchorWindowId))
-  })
+  const bounds = await getPopupBounds(anchorWindowId)
+  try {
+    await chrome.windows.update(windowId, { focused: true, ...bounds })
+  } catch (error) {
+    // Some Chromium variants reject geometry updates for an existing popup.
+    // Focusing it without repositioning still preserves the popup UX.
+    console.warn('Popup geometry update failed; focusing without bounds:', error)
+    await chrome.windows.update(windowId, { focused: true })
+  }
   standaloneWindowId = windowId
 }
 
@@ -214,12 +368,24 @@ async function openStandaloneWindow(
     return
   }
 
-  const window = await chrome.windows.create({
-    url: getStandaloneUrl(from, sessionId, Boolean(options.autoFill), options.targetTabId),
-    type: 'popup',
-    ...(await getPopupBounds(options.anchorWindowId)),
-    focused: true
-  })
+  const url = getStandaloneUrl(from, sessionId, Boolean(options.autoFill), options.targetTabId)
+  const bounds = await getPopupBounds(options.anchorWindowId)
+  let window: chrome.windows.Window
+  try {
+    window = await chrome.windows.create({ url, type: 'popup', ...bounds, focused: true })
+  } catch (error) {
+    // Creating a popup with explicit coordinates is rejected by a few
+    // Chromium-based browsers. Retry with only the portable popup options;
+    // the browser will choose the default position instead of opening a tab.
+    console.warn('Popup creation with bounds failed; retrying portable popup:', error)
+    window = await chrome.windows.create({
+      url,
+      type: 'popup',
+      width: 430,
+      height: 780,
+      focused: true
+    })
+  }
 
   standaloneWindowId = window.id || null
 }
@@ -400,9 +566,24 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       sendResponse({ success: true })
     }).catch((error) => {
       console.error('Start floating fill error:', error)
-      sendResponse({ success: false, error: error.message || '无法开始填写' })
+      // Keep the fill action usable through the native side panel if a
+      // particular Chromium build still rejects popup creation.
+      openDockedAutoFillSidePanel(sender.tab!.id!).then(() => {
+        sendResponse({ success: true, fallback: 'sidepanel' })
+      }).catch((fallbackError) => {
+        console.error('Start floating fill side-panel fallback failed:', fallbackError)
+        sendResponse({
+          success: false,
+          error: error?.message || fallbackError?.message || '无法开始填写'
+        })
+      })
     })
     return true
+  }
+
+  if (message.action === 'startFloatingFill' || message.action === 'openFloatingWindow') {
+    sendResponse({ success: false, error: '无法识别当前网页，请刷新当前网页后重试。' })
+    return false
   }
 
   if (message.action === 'rememberFillableTab' && sender.tab?.id) {
@@ -421,6 +602,30 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     fillableTabActivity.delete(message.tabId)
     sendResponse({ success: true })
     return false
+  }
+
+  if (message.action === 'resolveUploadAsset' && typeof message.assetUrl === 'string') {
+    resolveUploadAsset(message.assetUrl, Number(message.index) || 0)
+      .then((asset) => sendResponse({ success: true, asset }))
+      .catch((error) => sendResponse({ success: false, error: error.message || 'Unable to load product image' }))
+    return true
+  }
+
+  if (
+    message.action === 'fillVirtualFileInput' &&
+    sender.tab?.id &&
+    Array.isArray(message.assetUrls)
+  ) {
+    fillVirtualFileInputInTab(
+      sender.tab.id,
+      sender.frameId || 0,
+      message.assetUrls.filter((url: unknown): url is string => typeof url === 'string' && Boolean(url)),
+      Boolean(message.multiple),
+      String(message.pickerContext || '')
+    ).then(sendResponse).catch((error) => {
+      sendResponse({ success: false, error: error.message || 'Unable to fill upload picker' })
+    })
+    return true
   }
 
   // Handle URL-based form fill request

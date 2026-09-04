@@ -67,7 +67,7 @@ export default {
       temperatureDescription: 'Controls randomness: 0 is focused, 1 is creative',
       language: 'Language',
       about: 'About',
-      version: 'Chat4o AI Plugin v1.0.0',
+      version: 'Chat4o AI Plugin v1.0.4',
       poweredBy: 'Powered by Chrome Side Panel API'
     }
   }

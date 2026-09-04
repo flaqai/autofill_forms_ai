@@ -12,7 +12,16 @@ const createFloatingButton = () => {
   // Create host element for Shadow DOM
   const host = document.createElement('div')
   host.id = 'chat4o-floating-button-host'
-  host.style.cssText = 'position: fixed; bottom: 0; right: 0; z-index: 2147483647;'
+  host.style.cssText = [
+    'position: fixed',
+    'right: 0',
+    'bottom: 0',
+    'width: 0',
+    'height: 0',
+    'z-index: 2147483647',
+    'pointer-events: none',
+    'isolation: isolate'
+  ].join(';')
 
   // Attach Shadow DOM
   const shadowRoot = host.attachShadow({ mode: 'open' })
@@ -28,6 +37,7 @@ const createFloatingButton = () => {
       flex-direction: column;
       align-items: flex-end;
       gap: 8px;
+      pointer-events: none;
     }
 
     .status-bubble {
@@ -66,6 +76,7 @@ const createFloatingButton = () => {
       color: #9ca3af;
       transition: all 0.2s ease;
       z-index: 1;
+      pointer-events: auto;
     }
 
     .close-button:hover {
@@ -89,6 +100,8 @@ const createFloatingButton = () => {
       border: none;
       outline: none;
       padding: 0;
+      pointer-events: auto;
+      touch-action: none;
     }
 
     .floating-button.is-starting {
@@ -302,8 +315,13 @@ const createFloatingButton = () => {
         throw new Error(response?.error || '无法开始填写')
       }
       showStatus('已开始填写')
-    } catch {
-      showStatus('无法开始，请刷新当前网页后重试')
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : ''
+      if (/context invalidated|extension context/i.test(errorMessage)) {
+        showStatus('插件已更新，请刷新当前网页')
+      } else {
+        showStatus('无法开始，请刷新当前网页后重试')
+      }
     } finally {
       resetButton()
     }

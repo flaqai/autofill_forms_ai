@@ -260,11 +260,21 @@ function getPageSnapshotDirectly(): PageSnapshot {
       .slice(0, 280)
   }
 
+  const embeddedFormLinks = Array.from(document.querySelectorAll<HTMLIFrameElement>('iframe[src]'))
+    .map((frame) => ({
+      text: frame.title || frame.getAttribute('aria-label') || 'Embedded submission form',
+      href: frame.src,
+      context: frame.closest<HTMLElement>('section, article, main, form, [role="main"]')?.innerText?.slice(0, 280) || '',
+      hrefLang: '',
+      rel: ''
+    }))
+    .filter((link) => Boolean(link.href))
+
   return {
     title: document.title || '',
     url: window.location.href,
     text: (document.body?.innerText || document.body?.textContent || '').slice(0, 6000),
-    links: Array.from(document.links)
+    links: [...Array.from(document.links)
       .map((link) => ({
         text: link.textContent?.trim() || link.getAttribute('aria-label') || link.title || '',
         href: link.href,
@@ -272,8 +282,103 @@ function getPageSnapshotDirectly(): PageSnapshot {
         hrefLang: link.getAttribute('hreflang') || '',
         rel: link.rel || ''
       }))
-      .filter((link) => Boolean(link.href))
+      .filter((link) => Boolean(link.href)), ...embeddedFormLinks]
       .slice(0, 900)
+  }
+}
+
+function hasCredentialControlsDirectly() {
+  const roots: Array<Document | ShadowRoot> = [document]
+  for (let index = 0; index < roots.length; index += 1) {
+    const root = roots[index]
+    root.querySelectorAll<HTMLElement>('*').forEach((element) => {
+      if (element.shadowRoot) roots.push(element.shadowRoot)
+    })
+  }
+
+  const inputs = roots.flatMap((root) => (
+    Array.from(root.querySelectorAll<HTMLInputElement>('input'))
+  )).filter((input) => {
+    const style = window.getComputedStyle(input)
+    const rect = input.getBoundingClientRect()
+    return (
+      !input.disabled &&
+      input.type !== 'hidden' &&
+      input.getAttribute('aria-hidden') !== 'true' &&
+      !input.closest('[aria-hidden="true"], [inert]') &&
+      style.display !== 'none' &&
+      style.visibility !== 'hidden' &&
+      Number(style.opacity || '1') > 0 &&
+      rect.width > 0 &&
+      rect.height > 0
+    )
+  })
+
+  const hasPasswordField = inputs.some((input) => {
+    const autocomplete = input.autocomplete.toLowerCase()
+    return (
+      input.type === 'password' ||
+      autocomplete === 'current-password' ||
+      autocomplete === 'new-password'
+    )
+  })
+  if (hasPasswordField) return true
+
+  const loginText = /\b(log\s*in|login|sign\s*in|signin)\b|登录|登入|登錄/i
+  const registrationText = /\b(sign\s*up|signup|register|create\s+(?:an?\s+)?account)\b|注册|註冊/i
+  const accountText = /\b(account|profile|member|username|user\s*name)\b|账号|帐号|帳號|账户|帐户|帳戶|用户名|用戶名/i
+  const newsletterText = /\b(newsletter|subscribe|mailing\s+list|email\s+updates)\b|订阅|訂閱|电子报|電子報/i
+  const identityInputs = inputs.filter((input) => {
+    const identity = [
+      input.type,
+      input.name,
+      input.id,
+      input.autocomplete,
+      input.placeholder,
+      input.getAttribute('aria-label') || ''
+    ].join(' ')
+    return /\b(email|e-mail|username|user\s*name|account|login)\b|邮箱|郵箱|用户名|用戶名|帐号|帳號/i.test(identity)
+  })
+
+  return identityInputs.some((input) => {
+    const container = input.closest<HTMLElement>('form, [role="form"], [role="dialog"]')
+    if (!container) return false
+
+    const containerText = [
+      container.getAttribute('aria-label') || '',
+      container.getAttribute('data-testid') || '',
+      container.innerText || container.textContent || ''
+    ].join(' ').slice(0, 2400)
+    if (newsletterText.test(containerText) || (!loginText.test(containerText) && !registrationText.test(containerText))) {
+      return false
+    }
+
+    return Array.from(container.querySelectorAll<HTMLElement>(
+      'button, [role="button"], input[type="button"], input[type="submit"], a[href]'
+    )).some((action) => {
+      const label = [
+        action.getAttribute('aria-label') || '',
+        action.textContent || '',
+        action instanceof HTMLInputElement ? action.value : ''
+      ].join(' ')
+      return loginText.test(label) || (
+        registrationText.test(label) && accountText.test(containerText)
+      )
+    })
+  })
+}
+
+async function scanCredentialControls(tabId: number) {
+  try {
+    const credentialResults = await chrome.scripting.executeScript({
+      target: { tabId, allFrames: true },
+      func: hasCredentialControlsDirectly
+    })
+    return credentialResults.some((result) => result.result === true)
+  } catch {
+    // Restricted frames and browser error pages may not allow this read-only
+    // scan. Callers still have URL-based authentication detection.
+    return false
   }
 }
 
@@ -291,9 +396,178 @@ function isLikely404(snapshot: PageSnapshot) {
   return /\b(404|not found|page not found|doesn t exist|does not exist|页面不存在|找不到页面)\b/.test(text)
 }
 
+type BotChallengeDetection = {
+  detected: boolean
+  provider?: 'cloudflare' | 'hostinger' | 'browser'
+  evidence?: string
+  statusCode?: number
+}
+
+async function detectBotChallengeDirectly(): Promise<BotChallengeDetection> {
+  const normalize = (value: string) => value
+    .normalize('NFKC')
+    .toLowerCase()
+    .replace(/[\u2018\u2019']/g, '')
+    .replace(/[^\p{L}\p{N}]+/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+  const title = normalize(document.title || '')
+  const url = window.location.href.toLowerCase()
+  const bodyText = normalize((document.body?.innerText || document.body?.textContent || '').slice(0, 12000))
+  const challengeSurfaceText = `${title} ${bodyText.slice(0, 2400)}`
+  const markup = (document.documentElement?.outerHTML || '').slice(0, 180000).toLowerCase()
+  const navigationEntry = performance.getEntriesByType('navigation')[0] as PerformanceNavigationTiming & {
+    responseStatus?: number
+  }
+  const statusCode = Number(navigationEntry?.responseStatus || 0) || undefined
+
+  const cloudflareDomMarker = Boolean(document.querySelector([
+    '#cf-challenge-running',
+    '#cf-spinner-please-wait',
+    '.cf-browser-verification',
+    '[id^="cf-chl-"]',
+    'script[src*="/cdn-cgi/challenge-platform/"]',
+    'form#challenge-form[action*="/cdn-cgi/"]',
+    'form[action*="/cdn-cgi/challenge-platform/"]',
+    'input[name^="cf_chl_"]'
+  ].join(',')))
+  const cloudflareUrlMarker = (
+    /(?:^|\.)challenges\.cloudflare\.com$/i.test(window.location.hostname) ||
+    /\/cdn-cgi\/challenge-platform\/|[?&](?:__)?cf_chl_/i.test(url)
+  )
+  const cloudflareScriptMarker = Array.from(document.scripts).some((script) => (
+    /\b_cf_chl_(?:opt|enter)\b|\bwindow\._cf_chl\b/.test(script.textContent || '')
+  ))
+  const hostingerMarker = (
+    /\bhostinger\b|\bhcdn\b/.test(challengeSurfaceText) ||
+    /(?:hostinger|hcdn)[^"'<>]{0,80}(?:challenge|verification|browser)/.test(markup)
+  )
+  const checkingBrowser = /\bchecking (?:your|the) browser before accessing\b/.test(challengeSurfaceText)
+  const browserVerification = /\b(?:browser|security|human) verification\b|\bverifying that you are not a robot\b|\bverify (?:that )?you are (?:a )?human\b|\bplease stand by while we (?:are )?checking your browser\b|安全验证|安全驗證|验证您不是自动程序|驗證您不是自動程式/.test(challengeSurfaceText)
+  const automaticRedirect = /\bthis process is automatic\b.*\b(?:redirect|browser)\b/.test(bodyText)
+  const challengeTitle = (
+    /^(?:just a moment|checking (?:your|the) browser|bot verification|browser verification|security verification)(?:\s|$)/.test(title) ||
+    /^attention required(?: cloudflare)?(?:\s|$)/.test(title)
+  )
+  const forbiddenWafPage = (
+    (statusCode === 403 || /\b403 forbidden\b/.test(`${title} ${bodyText.slice(0, 600)}`)) &&
+    (
+      cloudflareDomMarker ||
+      cloudflareScriptMarker ||
+      hostingerMarker ||
+      /\b(?:cloudflare ray id|attention required|request (?:was )?blocked|access denied)\b/.test(challengeSurfaceText)
+    )
+  )
+  let cfMitigatedHeader = false
+  if (
+    statusCode === 403 ||
+    cloudflareUrlMarker ||
+    cloudflareDomMarker ||
+    cloudflareScriptMarker ||
+    challengeTitle ||
+    checkingBrowser
+  ) {
+    const controller = new AbortController()
+    const timeoutId = window.setTimeout(() => controller.abort(), 5000)
+    try {
+      const response = await fetch(window.location.href, {
+        method: 'HEAD',
+        credentials: 'include',
+        cache: 'no-store',
+        redirect: 'manual',
+        signal: controller.signal
+      })
+      cfMitigatedHeader = response.headers.get('cf-mitigated')?.toLowerCase() === 'challenge'
+    } catch {
+      // DOM and navigation signals remain available when the challenge blocks
+      // the same-origin confirmation request.
+    } finally {
+      window.clearTimeout(timeoutId)
+    }
+  }
+
+  if (
+    cfMitigatedHeader ||
+    cloudflareUrlMarker ||
+    cloudflareDomMarker ||
+    cloudflareScriptMarker ||
+    (challengeTitle && /\bcloudflare\b|\bjust a moment\b/.test(challengeSurfaceText)) ||
+    forbiddenWafPage && /\bcloudflare\b|\bcf ray\b/.test(`${challengeSurfaceText} ${markup}`)
+  ) {
+    return {
+      detected: true,
+      provider: 'cloudflare',
+      evidence: cfMitigatedHeader
+        ? 'Cloudflare cf-mitigated: challenge 响应'
+        : forbiddenWafPage
+          ? 'Cloudflare 403/WAF 挑战页'
+          : 'Cloudflare 挑战页 DOM 标记',
+      statusCode
+    }
+  }
+
+  if (
+    hostingerMarker && (
+      challengeTitle ||
+      forbiddenWafPage ||
+      checkingBrowser && bodyText.length < 2400
+    ) ||
+    checkingBrowser && bodyText.length < 2400 && /\bjust a moment\b/.test(challengeSurfaceText)
+  ) {
+    return {
+      detected: true,
+      provider: hostingerMarker ? 'hostinger' : 'browser',
+      evidence: hostingerMarker ? 'Hostinger hCDN 浏览器挑战页' : '浏览器安全检查页',
+      statusCode
+    }
+  }
+
+  if (
+    challengeTitle && (browserVerification || automaticRedirect) ||
+    checkingBrowser && automaticRedirect ||
+    forbiddenWafPage && browserVerification
+  ) {
+    return {
+      detected: true,
+      provider: 'browser',
+      evidence: forbiddenWafPage ? '403 浏览器安全挑战页' : '浏览器安全挑战页',
+      statusCode
+    }
+  }
+
+  return { detected: false, statusCode }
+}
+
 function isLikelyBotChallenge(snapshot: PageSnapshot) {
-  const text = normalizeText(`${snapshot.title} ${snapshot.text.slice(0, 1800)}`)
-  return /\b(just a moment|checking your browser|security verification|verify you are human|performing security verification|cloudflare)\b|请稍候|安全验证|驗證您不是自動程序|验证您不是自动程序/.test(text)
+  const text = normalizeText(`${snapshot.title} ${snapshot.url} ${snapshot.text.slice(0, 3000)}`)
+  const hasChallengeLanguage = /\b(just a moment|checking (?:your|the) browser before accessing|security verification|browser verification|verify (?:that )?you are human|verifying that you are not a robot|performing security verification|this process is automatic)\b|请稍候|安全验证|安全驗證|驗證您不是自動程序|验证您不是自动程序/.test(text)
+  const hasProviderSignal = /\b(cloudflare|hostinger|hcdn|cf mitigated|cf ray)\b|cdn cgi challenge platform/.test(text)
+  const hasChallengeTitle = /^(?:just a moment|checking (?:your|the) browser|bot verification|browser verification|security verification)\b/.test(normalizeText(snapshot.title))
+  const hasWaf403 = /\b403 forbidden\b/.test(text) && /\b(cloudflare|hostinger|hcdn|attention required|access denied|request blocked)\b/.test(text)
+  return hasWaf403 || hasChallengeTitle && (hasChallengeLanguage || hasProviderSignal) || hasChallengeLanguage && hasProviderSignal
+}
+
+async function scanBotChallenge(tabId: number, snapshot: PageSnapshot | null) {
+  try {
+    const [result] = await chrome.scripting.executeScript({
+      target: { tabId },
+      func: detectBotChallengeDirectly
+    })
+    if (result.result?.detected) return result.result
+  } catch {
+    // Fall through to the text-only snapshot check when the page blocks script
+    // injection or the browser is showing a restricted error document.
+  }
+
+  if (snapshot && isLikelyBotChallenge(snapshot)) {
+    return {
+      detected: true,
+      provider: 'browser' as const,
+      evidence: '页面标题或正文显示浏览器安全挑战'
+    }
+  }
+
+  return { detected: false } satisfies BotChallengeDetection
 }
 
 function detectTransientPageFailure(
@@ -394,7 +668,7 @@ function extractSubmitUrlsFromText(text: string, origin: string) {
   const normalizedText = text.replace(/\\\//g, '/')
   const locMatches = Array.from(normalizedText.matchAll(/<loc>\s*([^<]+)\s*<\/loc>/gi)).map((match) => match[1])
   const plainMatches = Array.from(normalizedText.matchAll(/https?:\/\/[^\s"'<>]+/gi)).map((match) => match[0])
-  const hrefMatches = Array.from(normalizedText.matchAll(/\b(?:href|action)=["']([^"']+)["']/gi)).map((match) => match[1])
+  const hrefMatches = Array.from(normalizedText.matchAll(/\bhref=["']([^"']+)["']/gi)).map((match) => match[1])
   const routeMatches = Array.from(normalizedText.matchAll(/["'](\/[^"']*(?:submit|add|post|sign-up|suggest|recommend|recommand|feature|promote|nominate|publish|register|listing|product|startup|tool|directory|enviar|cadastrar|projeto|produto|ferramenta)[^"']*)["']/gi)).map((match) => match[1])
 
   ;[...locMatches, ...plainMatches, ...hrefMatches, ...routeMatches].forEach((rawUrl) => {
@@ -617,8 +891,42 @@ async function inspectCurrentTab(tabId: number) {
   // The extractor below also waits for stable field scans before returning.
   await wait(850)
 
-  let fields: ExtractedFormField[] = []
+  let snapshot: PageSnapshot | null = null
   let readError: unknown
+  try {
+    snapshot = await getPageSnapshot(tabId)
+  } catch (error) {
+    readError = error
+    snapshot = null
+  }
+
+  let botChallenge = await scanBotChallenge(tabId, snapshot)
+  if (botChallenge.detected) {
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      await wait(2000)
+      try {
+        tab = await waitForTabComplete(tabId)
+        snapshot = await getPageSnapshot(tabId)
+        botChallenge = await scanBotChallenge(tabId, snapshot)
+        if (!botChallenge.detected) break
+      } catch {
+        // Keep the last readable challenge snapshot for the caller.
+      }
+    }
+
+    if (botChallenge.detected) {
+      return {
+        tab,
+        fields: [] as ExtractedFormField[],
+        snapshot,
+        hasCredentialFields: false,
+        botChallenge,
+        pageFailure: detectTransientPageFailure(tabId, snapshot, readError)
+      }
+    }
+  }
+
+  let fields: ExtractedFormField[] = []
   try {
     fields = await extractFormFieldsFromTab(tabId)
   } catch (error) {
@@ -626,7 +934,6 @@ async function inspectCurrentTab(tabId: number) {
     fields = []
   }
 
-  let snapshot: PageSnapshot | null = null
   try {
     snapshot = await getPageSnapshot(tabId)
   } catch (error) {
@@ -655,13 +962,15 @@ async function inspectCurrentTab(tabId: number) {
     }
   }
 
-  if (snapshot && isLikelyBotChallenge(snapshot)) {
+  botChallenge = await scanBotChallenge(tabId, snapshot)
+  if (botChallenge.detected) {
     for (let attempt = 0; attempt < 3; attempt += 1) {
       await wait(2000)
       try {
         const refreshedSnapshot = await getPageSnapshot(tabId)
         snapshot = refreshedSnapshot
-        if (!isLikelyBotChallenge(refreshedSnapshot)) {
+        botChallenge = await scanBotChallenge(tabId, refreshedSnapshot)
+        if (!botChallenge.detected) {
           fields = await extractFormFieldsFromTab(tabId).catch(() => [])
           break
         }
@@ -671,10 +980,14 @@ async function inspectCurrentTab(tabId: number) {
     }
   }
 
+  const hasCredentialFields = await scanCredentialControls(tabId)
+
   return {
     tab,
     fields,
     snapshot,
+    hasCredentialFields,
+    botChallenge,
     pageFailure: detectTransientPageFailure(tabId, snapshot, readError)
   }
 }
@@ -682,6 +995,21 @@ async function inspectCurrentTab(tabId: number) {
 function isDirectSubmissionUrl(url: string) {
   const normalized = normalizeText(url)
   return /\b(submit|subm+ission|submitter|add|post|new|register|sign up|listing|directory|suggest|recommend|recommand|nominate|feature|promote|product|tool|startup|classified|free ad|view|tip|pitch|crowdsourcing|enviar|cadastrar|projeto|produto|ferramenta)\b|提交|投稿|收录|收錄|推荐|推薦|新增|刊登|发布|發佈|登記|登记/.test(normalized)
+}
+
+function hasUnsafeFinalActionIntent(url: string) {
+  const unsafeAction = /(?:^|[^a-z0-9])(?:final(?:ize|ise)?|confirm(?:ation)?|publish|payment|checkout)(?:[^a-z0-9]|$)/i
+  try {
+    const parsed = new URL(url)
+    return (
+      parsed.pathname.split('/').some((segment) => unsafeAction.test(segment)) ||
+      Array.from(parsed.searchParams.entries()).some(([key, value]) => (
+        unsafeAction.test(key) || unsafeAction.test(value)
+      ))
+    )
+  } catch {
+    return true
+  }
 }
 
 function isAuthenticationGateUrl(url: string) {
@@ -839,25 +1167,14 @@ function selectFirstGoogleAccountDirectly() {
   ))
 
   if (uniqueCandidates.length !== 1) {
-    if (uniqueCandidates.length > 0) {
-      const firstAccount = uniqueCandidates[0]
-      const selectedEmail = (firstAccount.getAttribute('data-identifier') || '').trim().toLowerCase()
-      firstAccount.click()
-      return {
-        selected: true,
-        matchCount: uniqueCandidates.length,
-        selectedEmail,
-        selectionMode: 'first',
-        reason: ''
-      }
-    }
-
     return {
       selected: false,
       matchCount: uniqueCandidates.length,
       selectedEmail: '',
       selectionMode: '',
-      reason: '账号选择页没有找到可见的已登录账号'
+      reason: uniqueCandidates.length > 1
+        ? '账号选择页有多个可用账号，需要按配置邮箱或由用户确认'
+        : '账号选择页没有找到可见的已登录账号'
     }
   }
 
@@ -1256,11 +1573,49 @@ function clickVisibleAuthenticationActionDirectly() {
   return { clicked: true, matchCount: 1, label: candidates[0].label }
 }
 
-function clickVisibleSubmissionActionDirectly() {
+function findVisibleSubmissionActionDirectly() {
   const normalize = (value: string) => value.toLowerCase().replace(/\s+/g, ' ').trim()
   const exactSubmissionText = /^(?:submit(?:\s+(?:a|your|the))?\s*(?:tool|product|project|startup|site|website|listing|app)?|add\s+(?:a|your)\s+(?:tool|product|project|startup|site|website|listing|app)|list\s+your\s+(?:tool|product|project|startup|site|website|app)|get\s+listed|ship\s+(?:your\s+)?product|launch\s+(?:your\s+)?(?:tool|product|project|startup)|enviar\s+(?:um\s+|seu\s+)?(?:projeto|produto|site|ferramenta)|cadastrar\s+(?:um\s+|seu\s+)?(?:projeto|produto|site|ferramenta)|提交(?:产品|產品|工具|项目|項目|网站|網站)?|投稿|收录|收錄|推荐(?:工具|产品|網站|网站)?|推薦(?:工具|產品|網站)?|新增(?:工具|產品|网站|網站)?)$/i
-  const candidates = Array.from(document.querySelectorAll<HTMLElement>('button, [role="button"]'))
+  const unsafeAction = /(?:^|[^a-z0-9])(?:final(?:ize|ise)?|confirm(?:ation)?|publish|payment|checkout)(?:[^a-z0-9]|$)/i
+  const candidates = Array.from(document.querySelectorAll<HTMLAnchorElement>('a[href]'))
     .filter((element) => {
+      const rawHref = (element.getAttribute('href') || '').trim()
+      if (!rawHref || rawHref.startsWith('#') || /^(?:javascript|data|blob|mailto|tel):/i.test(rawHref)) {
+        return false
+      }
+
+      let destination: URL
+      try {
+        destination = new URL(rawHref, window.location.href)
+      } catch {
+        return false
+      }
+      if (
+        destination.pathname.split('/').some((segment) => unsafeAction.test(segment)) ||
+        Array.from(destination.searchParams.entries()).some(([key, value]) => (
+          unsafeAction.test(key) || unsafeAction.test(value)
+        ))
+      ) return false
+
+      const target = (element.getAttribute('target') || '').trim().toLowerCase()
+      const isOrdinarySameOriginNavigation = (
+        ['http:', 'https:'].includes(destination.protocol) &&
+        destination.origin === window.location.origin &&
+        !destination.hash &&
+        destination.href !== window.location.href &&
+        (!target || target === '_self') &&
+        !element.hasAttribute('download') &&
+        !element.hasAttribute('ping') &&
+        !element.hasAttribute('form') &&
+        !element.hasAttribute('onclick') &&
+        !element.hasAttribute('data-method') &&
+        !element.hasAttribute('data-turbo-method') &&
+        !element.hasAttribute('data-remote') &&
+        element.getAttribute('role') !== 'button' &&
+        !element.closest('form')
+      )
+      if (!isOrdinarySameOriginNavigation) return false
+
       const style = window.getComputedStyle(element)
       const rect = element.getBoundingClientRect()
       return (
@@ -1269,21 +1624,20 @@ function clickVisibleSubmissionActionDirectly() {
         rect.width > 0 &&
         rect.height > 0 &&
         !element.hasAttribute('disabled') &&
-        !element.closest('form')
+        element.getAttribute('aria-disabled') !== 'true'
       )
     })
     .map((element) => ({
-      element,
-      label: normalize(element.getAttribute('aria-label') || element.textContent || '')
+      label: normalize(element.getAttribute('aria-label') || element.textContent || ''),
+      url: new URL(element.getAttribute('href') || '', window.location.href).toString()
     }))
     .filter(({ label }) => exactSubmissionText.test(label))
 
   if (candidates.length !== 1) {
-    return { clicked: false, matchCount: candidates.length, label: '' }
+    return { found: false, matchCount: candidates.length, label: '', url: '' }
   }
 
-  candidates[0].element.click()
-  return { clicked: true, matchCount: 1, label: candidates[0].label }
+  return { found: true, matchCount: 1, ...candidates[0] }
 }
 
 async function openVisibleSubmissionAction(
@@ -1292,21 +1646,24 @@ async function openVisibleSubmissionAction(
 ) {
   const [result] = await chrome.scripting.executeScript({
     target: { tabId },
-    func: clickVisibleSubmissionActionDirectly
+    func: findVisibleSubmissionActionDirectly
   })
   const action = result.result
-  if (!action?.clicked) {
+  if (!action?.found || !action.url) {
     if (action?.matchCount && action.matchCount > 1) {
-      addDiagnostic?.(`页面有 ${action.matchCount} 个提交按钮，无法安全确定唯一入口`)
+      addDiagnostic?.(`页面有 ${action.matchCount} 个提交入口链接，无法安全确定唯一入口`)
     }
     return null
   }
+  if (hasUnsafeFinalActionIntent(action.url)) {
+    addDiagnostic?.(`页面唯一的提交入口指向最终操作 URL，已拒绝导航`)
+    return null
+  }
 
-  addDiagnostic?.(`链接中没有高置信度入口，已点击页面唯一的提交按钮「${action.label}」`)
-  await wait(350)
+  addDiagnostic?.(`链接中没有高置信度入口，已解析页面唯一的安全提交入口「${action.label}」`)
   return {
     actionLabel: action.label,
-    inspection: await inspectCurrentTab(tabId)
+    inspection: await navigateAndInspect(tabId, action.url)
   }
 }
 
@@ -1401,6 +1758,23 @@ async function findSubmitPage(
     }
   }
 
+  const challengeResult = (
+    inspection: Awaited<ReturnType<typeof navigateAndInspect>>,
+    resumeUrl: string
+  ): SubmitPageResult => ({
+    url: inspection.tab.url || resumeUrl,
+    fields: inspection.fields,
+    tab: inspection.tab,
+    manualOnly: true,
+    message: '站点要求先完成浏览器安全验证。你处理时，其他网站会继续运行。',
+    humanGate: {
+      type: 'verification',
+      detectedUrl: inspection.tab.url || resumeUrl,
+      resumeUrl,
+      detectedAt: Date.now()
+    }
+  })
+
   const enqueueCandidates = (candidates: SubmissionCandidate[]) => {
     candidateQueue = mergeSubmissionCandidates(candidateQueue, candidates)
       .filter((candidate) => !tried.has(candidate.url))
@@ -1410,6 +1784,11 @@ async function findSubmitPage(
     const canonicalUrl = getCanonicalUrl(candidate.url)
     if (tried.has(canonicalUrl)) return null
     tried.add(canonicalUrl)
+
+    if (hasUnsafeFinalActionIntent(canonicalUrl)) {
+      addDiagnostic?.(`跳过：${canonicalUrl}，原因：URL 包含 final/confirm/publish/payment/checkout 最终操作信号`)
+      return null
+    }
 
     updateMessage(`尝试提交入口：${canonicalUrl}`)
     addDiagnostic?.(`尝试：${canonicalUrl}（得分 ${candidate.score}，来源 ${candidate.source}${candidate.evidence ? `，线索：${candidate.evidence}` : ''}）`)
@@ -1428,6 +1807,11 @@ async function findSubmitPage(
     }
 
     const finalUrl = inspection.tab.url || canonicalUrl
+    if (inspection.botChallenge.detected) {
+      const evidence = inspection.botChallenge.evidence || '浏览器安全挑战页'
+      addDiagnostic?.(`候选页停在${evidence}，已转入人工验证队列`)
+      return { result: challengeResult(inspection, canonicalUrl), inspection }
+    }
     if (inspection.snapshot && isLikely404(inspection.snapshot)) {
       addDiagnostic?.(`跳过：${canonicalUrl}，页面明确显示不存在或 404`)
       return { result: null, inspection }
@@ -1455,12 +1839,7 @@ async function findSubmitPage(
       return { result: bestManualPage?.result || null, inspection }
     }
 
-    const hasCredentialFields = inspection.fields.some((field) => field.type === 'password')
-    if (
-      !redirectedAway &&
-      hasCredentialFields &&
-      (isAuthenticationGateUrl(finalUrl) || isHighConfidenceSubmissionCandidate(candidate))
-    ) {
+    if (inspection.hasCredentialFields) {
       rememberManualPage(
         inspection,
         candidate,
@@ -1472,7 +1851,7 @@ async function findSubmitPage(
           resumeUrl: candidate.url
         }
       )
-      addDiagnostic?.(`候选页 ${finalUrl} 包含密码字段，先视为账号门槛并继续搜索直接提交入口`)
+      addDiagnostic?.(`候选页 ${finalUrl} 包含高置信度账号凭据控件，无论 URL 是否变化都先进入人工账号门控`)
       return { result: null, inspection }
     }
 
@@ -1543,21 +1922,9 @@ async function findSubmitPage(
 
   const currentContext = `${current.snapshot?.title || current.tab.title || ''} ${current.snapshot?.url || current.tab.url || ''} ${current.snapshot?.text.slice(0, 2500) || ''}`
   const currentDiagnosis = getSeoListingFormDiagnosis(current.fields, currentContext)
-  if (current.snapshot && isLikelyBotChallenge(current.snapshot)) {
-    addDiagnostic?.('站点停在安全验证页面，已等待自动放行但验证尚未完成')
-    return {
-      url: current.tab.url || originalUrl,
-      fields: current.fields,
-      tab: current.tab,
-      manualOnly: true,
-      message: '站点要求先完成人机安全验证。你处理时，其他网站会继续运行。',
-      humanGate: {
-        type: 'verification',
-        detectedUrl: current.tab.url || originalUrl,
-        resumeUrl: originalUrl,
-        detectedAt: Date.now()
-      }
-    }
+  if (current.botChallenge.detected) {
+    addDiagnostic?.(`站点停在${current.botChallenge.evidence || '浏览器安全挑战页'}，已等待自动放行但验证尚未完成`)
+    return challengeResult(current, originalUrl)
   }
 
   const shouldTryDirectInput = (
@@ -1599,6 +1966,10 @@ async function findSubmitPage(
     updateMessage('当前页面像 404，回到首页寻找提交入口')
     addDiagnostic?.('当前页像 404，切回首页继续找')
     const home = await navigateAndInspect(tabId, getOrigin(originalUrl))
+    if (home.botChallenge.detected) {
+      addDiagnostic?.(`首页停在${home.botChallenge.evidence || '浏览器安全挑战页'}，已转入人工验证队列`)
+      return challengeResult(home, originalUrl)
+    }
     const homeContext = `${home.snapshot?.title || home.tab.title || ''} ${home.snapshot?.url || home.tab.url || ''} ${home.snapshot?.text.slice(0, 2500) || ''}`
     const homeDiagnosis = getSeoListingFormDiagnosis(home.fields, homeContext)
     if (homeDiagnosis.isListingForm) {
@@ -1667,9 +2038,13 @@ async function findSubmitPage(
       openedSubmissionButton = true
       const buttonInspection = openedSubmissionAction.inspection
       const buttonUrl = buttonInspection.tab.url || snapshot.url || originalUrl
+      if (buttonInspection.botChallenge.detected) {
+        addDiagnostic?.(`提交入口通向${buttonInspection.botChallenge.evidence || '浏览器安全挑战页'}，已转入人工验证队列`)
+        return challengeResult(buttonInspection, snapshot.url || originalUrl)
+      }
       const buttonContext = `${buttonInspection.snapshot?.title || buttonInspection.tab.title || ''} ${buttonUrl} ${buttonInspection.snapshot?.text.slice(0, 2500) || ''}`
       const buttonDiagnosis = getSeoListingFormDiagnosis(buttonInspection.fields, buttonContext)
-      addDiagnostic?.(`点击提交按钮后字段 ${buttonInspection.fields.length} 个，判断：${buttonDiagnosis.reason}`)
+      addDiagnostic?.(`点击提交入口链接后字段 ${buttonInspection.fields.length} 个，判断：${buttonDiagnosis.reason}`)
 
       if (buttonDiagnosis.isListingForm) {
         return {
@@ -1679,14 +2054,13 @@ async function findSubmitPage(
         }
       }
 
-      const hasCredentialFields = buttonInspection.fields.some((field) => field.type === 'password')
-      if (isAuthenticationGateUrl(buttonUrl) || hasCredentialFields) {
+      if (isAuthenticationGateUrl(buttonUrl) || buttonInspection.hasCredentialFields) {
         return {
           url: buttonUrl,
           fields: buttonInspection.fields,
           tab: buttonInspection.tab,
           manualOnly: true,
-          message: '页面唯一的提交按钮通向账号门槛；完成登录或注册后插件会继续。',
+          message: '页面唯一的提交入口链接通向账号门槛；完成登录或注册后插件会继续。',
           humanGate: {
             type: 'authentication',
             detectedUrl: buttonUrl,
@@ -1706,7 +2080,7 @@ async function findSubmitPage(
           { intentText: productIntent, limit: MAX_LINK_CANDIDATES_PER_PAGE }
         )
         enqueueCandidates(buttonCandidates)
-        addDiagnostic?.(`点击提交按钮后继续发现 ${buttonCandidates.length} 个链接候选`)
+        addDiagnostic?.(`点击提交入口链接后继续发现 ${buttonCandidates.length} 个链接候选`)
       }
     }
   }
@@ -1715,6 +2089,10 @@ async function findSubmitPage(
     const openedAuthGate = await openVisibleAuthenticationGate(tabId, snapshot, addDiagnostic)
     if (openedAuthGate) {
       const gateUrl = openedAuthGate.inspection.tab.url || snapshot.url || originalUrl
+      if (openedAuthGate.inspection.botChallenge.detected) {
+        addDiagnostic?.(`登录入口通向${openedAuthGate.inspection.botChallenge.evidence || '浏览器安全挑战页'}，已转入人工验证队列`)
+        return challengeResult(openedAuthGate.inspection, originalUrl)
+      }
       const resumeUrl = getAuthenticationResumeUrl(gateUrl, originalUrl)
       return {
         url: resumeUrl,
@@ -2064,17 +2442,27 @@ class BatchRunner {
     }
 
     const preflightUrl = preflight.tab.url || item.inputUrl
-    const hasCredentialFields = preflight.fields.some((field) => field.type === 'password')
+    if (preflight.botChallenge.detected) {
+      this.addDiagnostic(item.id, `登录预检发现${preflight.botChallenge.evidence || '浏览器安全挑战页'}：${preflightUrl}`)
+      await this.parkHumanItem(item, {
+        url: preflightUrl,
+        fields: preflight.fields,
+        tab: preflight.tab,
+        manualOnly: true,
+        message: '预检发现站点浏览器安全验证，已转入人工验证队列。',
+        humanGate: {
+          type: 'verification',
+          detectedUrl: preflightUrl,
+          resumeUrl: item.inputUrl,
+          detectedAt: Date.now()
+        }
+      }, productProfile)
+      return
+    }
     const isAuthenticationPage = (
       isGoogleAccountsUrl(preflightUrl) ||
       isAuthenticationGateUrl(preflightUrl) ||
-      (
-        hasCredentialFields &&
-        (
-          isDirectSubmissionUrl(item.inputUrl) ||
-          !areDiscoveryUrlsEquivalent(preflightUrl, item.inputUrl)
-        )
-      )
+      preflight.hasCredentialFields
     )
     if (isAuthenticationPage) {
       this.addDiagnostic(item.id, `登录预检发现账号关卡：${preflightUrl}`)
@@ -2410,6 +2798,23 @@ class BatchRunner {
           existingTab = await waitForTabComplete(existingTabId)
           chrome.runtime.sendMessage({ action: 'markAutomationTab', tabId: existingTabId }).catch(() => undefined)
           const currentUrl = existingTab.url || item.currentUrl || item.submitUrl || item.inputUrl
+          const currentInspection = await inspectCurrentTab(existingTabId)
+          if (currentInspection.botChallenge.detected) {
+            await this.parkHumanItem(item, {
+              url: currentUrl,
+              fields: currentInspection.fields,
+              tab: currentInspection.tab,
+              manualOnly: true,
+              message: '当前页仍是浏览器安全挑战页，已转入人工验证队列。',
+              humanGate: {
+                type: 'verification',
+                detectedUrl: currentUrl,
+                resumeUrl: item.submitUrl || item.inputUrl,
+                detectedAt: Date.now()
+              }
+            }, productProfile)
+            return
+          }
           this.updateItem(item.id, {
             tabId: existingTabId,
             currentUrl,
@@ -2448,7 +2853,11 @@ class BatchRunner {
           )
 
           await rememberSubmitUrl(item.inputUrl, currentUrl)
-          const message = `当前页面已重试填写 ${fillResult.filledCount} 个字段，等待你检查`
+          const requiredCount = fillResult.remainingRequiredKeys?.length || 0
+          const invalidCount = fillResult.remainingInvalidKeys?.length || 0
+          const message = requiredCount || invalidCount
+            ? `当前页面已重试填写 ${fillResult.filledCount} 个字段；仍有 ${requiredCount} 个必填项为空、${invalidCount} 个校验失败，等待你复核（未提交）`
+            : `当前页面已重试填写 ${fillResult.filledCount} 个字段，等待你复核（未提交）`
           this.updateItem(item.id, {
             status: 'review',
             currentUrl,
@@ -2623,7 +3032,11 @@ class BatchRunner {
     )
 
     await rememberSubmitUrl(item.inputUrl, submitPage.url)
-    const message = `已填写 ${fillResult.filledCount} 个字段，等待你检查`
+    const requiredCount = fillResult.remainingRequiredKeys?.length || 0
+    const invalidCount = fillResult.remainingInvalidKeys?.length || 0
+    const message = requiredCount || invalidCount
+      ? `已填写 ${fillResult.filledCount} 个字段；仍有 ${requiredCount} 个必填项为空、${invalidCount} 个校验失败，等待你复核（未提交）`
+      : `已填写 ${fillResult.filledCount} 个字段，等待你复核（未提交）`
 
     this.updateItem(item.id, {
       status: 'review',
@@ -2729,7 +3142,7 @@ class BatchRunner {
     this.addDiagnostic(item.id, `重新检查人工关卡：${gate.type}`)
 
     let current = await inspectCurrentTab(item.tabId)
-    if (gate.type === 'verification' && current.snapshot && isLikelyBotChallenge(current.snapshot)) {
+    if (gate.type === 'verification' && current.botChallenge.detected) {
       const message = '安全验证仍未完成，其他网站会继续运行'
       this.updateItem(item.id, {
         status: 'awaiting_human',
@@ -2741,6 +3154,23 @@ class BatchRunner {
       return
     }
 
+    if (gate.type === 'authentication' && current.hasCredentialFields) {
+      const currentUrl = current.tab.url || gate.detectedUrl
+      const message = '登录仍未完成，请在当前登录页面继续；其他网站会照常处理。'
+      this.updateItem(item.id, {
+        status: 'awaiting_human',
+        currentUrl,
+        message,
+        humanGate: {
+          ...gate,
+          googleQueueState: gate.googleQueueState === 'skipped' ? 'skipped' : 'waiting_human',
+          detectedAt: Date.now()
+        }
+      })
+      this.addDiagnostic(item.id, `登录恢复检查仍发现账号凭据控件：${currentUrl}`)
+      return
+    }
+
     const currentUrl = current.tab.url || gate.detectedUrl
     if (gate.resumeUrl && !areDiscoveryUrlsEquivalent(currentUrl, gate.resumeUrl)) {
       this.addDiagnostic(item.id, `人工关卡已放行，回到 ${gate.resumeUrl} 继续`)
@@ -2749,14 +3179,10 @@ class BatchRunner {
 
     if (gate.type === 'authentication') {
       const resumedUrl = current.tab.url || gate.detectedUrl
-      const stillHasCredentialFields = current.fields.some((field) => field.type === 'password')
       const authenticationStillRequired = (
         isGoogleAccountsUrl(resumedUrl) ||
         isAuthenticationGateUrl(resumedUrl) ||
-        (
-          stillHasCredentialFields &&
-          !areDiscoveryUrlsEquivalent(resumedUrl, gate.resumeUrl)
-        )
+        current.hasCredentialFields
       )
       if (authenticationStillRequired) {
         const message = '登录仍未完成，请在当前登录页面继续；其他网站会照常处理。'
