@@ -30,7 +30,7 @@ skills/promotion-article-publisher/
 skills/writer/
 ```
 
-The repository is independent from the `autofill_forms_ai` browser-extension project and can live beside it as a separate GitHub repository.
+This is an independent Codex plugin project. It is temporarily stored under `autofill_forms_ai/promotion-article-publisher/` and can later be moved unchanged into its own `flaqai/promotion-article-publisher` repository.
 
 ## Security note
 
