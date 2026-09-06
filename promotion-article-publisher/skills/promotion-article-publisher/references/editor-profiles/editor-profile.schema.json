@@ -1,0 +1,170 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://local.codex/editor-profile.schema.json",
+  "title": "Publishing Editor Structure Profile",
+  "type": "object",
+  "required": ["platform", "scan", "routes", "states", "observed", "generation_contract", "drift_fingerprint", "limitations"],
+  "properties": {
+    "platform": {
+      "type": "object",
+      "required": ["id", "name", "domains"],
+      "properties": {
+        "id": {"type": "string", "pattern": "^[a-z0-9-]+$"},
+        "name": {"type": "string", "minLength": 1},
+        "domains": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}}
+      },
+      "additionalProperties": true
+    },
+    "scan": {
+      "type": "object",
+      "required": ["scanned_at", "browser", "locale", "authentication", "status", "blocked_states"],
+      "properties": {
+        "scanned_at": {"type": "string", "format": "date-time"},
+        "browser": {"type": "string", "minLength": 1},
+        "locale": {"type": "string", "minLength": 1},
+        "authentication": {"enum": ["authenticated", "anonymous", "unknown"]},
+        "status": {"enum": ["complete", "partial"]},
+        "blocked_states": {"type": "array", "items": {"type": "string"}}
+      },
+      "additionalProperties": true
+    },
+    "routes": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["id", "url_pattern", "purpose", "auth_required"],
+        "properties": {
+          "id": {"type": "string", "minLength": 1},
+          "url_pattern": {"type": "string", "minLength": 1},
+          "purpose": {"type": "string", "minLength": 1},
+          "auth_required": {"type": "boolean"}
+        },
+        "additionalProperties": true
+      }
+    },
+    "states": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["id", "label", "order", "entry_condition", "mutation_risk", "sections"],
+        "properties": {
+          "id": {"type": "string", "minLength": 1},
+          "label": {"type": "string", "minLength": 1},
+          "order": {"type": "integer", "minimum": 1},
+          "entry_condition": {"type": "string", "minLength": 1},
+          "mutation_risk": {"enum": ["none", "possible", "external"]},
+          "sections": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["id", "label", "order", "location", "fields", "toolbars", "actions"],
+              "properties": {
+                "id": {"type": "string", "minLength": 1},
+                "label": {"type": "string", "minLength": 1},
+                "order": {"type": "integer", "minimum": 1},
+                "location": {"type": "string", "minLength": 1},
+                "fields": {"type": "array", "items": {"$ref": "#/$defs/field"}},
+                "toolbars": {"type": "array", "items": {"$ref": "#/$defs/toolbar"}},
+                "actions": {"type": "array", "items": {"$ref": "#/$defs/action"}}
+              },
+              "additionalProperties": true
+            }
+          }
+        },
+        "additionalProperties": true
+      }
+    },
+    "observed": {
+      "type": "object",
+      "required": ["editor_model", "state_flow", "media_workflows", "link_workflows", "publication_boundary", "evidence"],
+      "properties": {
+        "editor_model": {"type": "string", "minLength": 1},
+        "state_flow": {"type": "array", "items": {"type": "string"}},
+        "media_workflows": {"type": "array", "items": {"type": "object"}},
+        "link_workflows": {"type": "array", "items": {"type": "object"}},
+        "publication_boundary": {"type": "object"},
+        "evidence": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/evidence"}}
+      },
+      "additionalProperties": true
+    },
+    "generation_contract": {
+      "type": "object",
+      "required": ["profile_status_required", "ordered_states", "writable_field_mapping", "coverage_exclusions", "manual_final_actions"],
+      "properties": {
+        "profile_status_required": {"const": "complete"},
+        "ordered_states": {"type": "array", "items": {"type": "string"}},
+        "writable_field_mapping": {"type": "array", "items": {"type": "object"}},
+        "coverage_exclusions": {"type": "array", "items": {"type": "object"}},
+        "manual_final_actions": {"type": "array", "items": {"type": "string"}}
+      },
+      "additionalProperties": true
+    },
+    "drift_fingerprint": {
+      "type": "object",
+      "required": ["route_patterns", "major_sections", "field_signatures", "toolbar_capabilities", "publication_labels"],
+      "properties": {
+        "route_patterns": {"type": "array", "items": {"type": "string"}},
+        "major_sections": {"type": "array", "items": {"type": "string"}},
+        "field_signatures": {"type": "array", "items": {"type": "string"}},
+        "toolbar_capabilities": {"type": "array", "items": {"type": "string"}},
+        "publication_labels": {"type": "array", "items": {"type": "string"}}
+      },
+      "additionalProperties": true
+    },
+    "limitations": {"type": "array", "items": {"type": "string"}}
+  },
+  "$defs": {
+    "field": {
+      "type": "object",
+      "required": ["id", "label", "order", "control", "required", "content_meaning", "copy_unit", "evidence_ids"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "label": {"type": "string", "minLength": 1},
+        "order": {"type": "integer", "minimum": 1},
+        "control": {"type": "string", "minLength": 1},
+        "required": {"type": ["boolean", "string"]},
+        "content_meaning": {"type": "string", "minLength": 1},
+        "copy_unit": {"type": "string", "minLength": 1},
+        "evidence_ids": {"type": "array", "minItems": 1, "items": {"type": "string"}}
+      },
+      "additionalProperties": true
+    },
+    "toolbar": {
+      "type": "object",
+      "required": ["id", "owner_field", "items", "evidence_ids"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "owner_field": {"type": "string", "minLength": 1},
+        "items": {"type": "array", "items": {"type": "string"}},
+        "evidence_ids": {"type": "array", "minItems": 1, "items": {"type": "string"}}
+      },
+      "additionalProperties": true
+    },
+    "action": {
+      "type": "object",
+      "required": ["id", "label", "kind", "side_effect", "evidence_ids"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "label": {"type": "string", "minLength": 1},
+        "kind": {"type": "string", "minLength": 1},
+        "side_effect": {"enum": ["none", "possible", "external"]},
+        "evidence_ids": {"type": "array", "minItems": 1, "items": {"type": "string"}}
+      },
+      "additionalProperties": true
+    },
+    "evidence": {
+      "type": "object",
+      "required": ["id", "state_id", "method", "summary"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "state_id": {"type": "string", "minLength": 1},
+        "method": {"enum": ["dom", "aria", "visual", "interaction", "screenshot"]},
+        "summary": {"type": "string", "minLength": 1}
+      },
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": true
+}

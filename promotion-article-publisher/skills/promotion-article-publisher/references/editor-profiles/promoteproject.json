@@ -1,0 +1,318 @@
+{
+  "platform": {
+    "id": "promoteproject",
+    "name": "PromoteProject",
+    "domains": ["www.promoteproject.com"]
+  },
+  "scan": {
+    "scanned_at": "2026-09-01T04:48:08Z",
+    "browser": "BitBrowser Chromium 126 via CDP",
+    "locale": "en",
+    "authentication": "authenticated",
+    "status": "complete",
+    "blocked_states": []
+  },
+  "routes": [
+    {
+      "id": "publish-article",
+      "url_pattern": "https://www.promoteproject.com/publish-article",
+      "purpose": "Create an article or draft",
+      "auth_required": true
+    }
+  ],
+  "states": [
+    {
+      "id": "article-form",
+      "label": "New article",
+      "order": 1,
+      "entry_condition": "Open the authenticated publish-article route",
+      "mutation_risk": "none",
+      "sections": [
+        {
+          "id": "policy-notice",
+          "label": "Submission notice",
+          "order": 1,
+          "location": "Top of article card",
+          "fields": [],
+          "toolbars": [],
+          "actions": []
+        },
+        {
+          "id": "article-content",
+          "label": "Article content",
+          "order": 2,
+          "location": "Main form, upper section",
+          "fields": [
+            {
+              "id": "title",
+              "label": "Title",
+              "order": 1,
+              "control": "single-line text input; id=title; name=title; placeholder=Enter title",
+              "required": true,
+              "content_meaning": "Article title",
+              "copy_unit": "title",
+              "evidence_ids": ["pp-dom-form"]
+            },
+            {
+              "id": "text",
+              "label": "Text",
+              "order": 2,
+              "control": "Summernote 0.9.0 contenteditable rich-text editor",
+              "required": "not expressed as an HTML required attribute",
+              "content_meaning": "Article body",
+              "copy_unit": "rich text or HTML-compatible body",
+              "evidence_ids": ["pp-dom-form", "pp-toolbar"]
+            }
+          ],
+          "toolbars": [
+            {
+              "id": "summernote-toolbar",
+              "owner_field": "text",
+              "items": ["style: normal, blockquote, code, H1-H6", "bold", "underline", "remove formatting", "font family", "background color", "text color", "unordered list", "ordered list", "paragraph alignment and indentation", "table", "link", "image", "video", "fullscreen", "code view", "help"],
+              "evidence_ids": ["pp-toolbar"]
+            }
+          ],
+          "actions": []
+        },
+        {
+          "id": "article-metadata",
+          "label": "Article metadata and publication",
+          "order": 3,
+          "location": "Main form, below editor",
+          "fields": [
+            {
+              "id": "keywords",
+              "label": "Keywords",
+              "order": 1,
+              "control": "single-line text input; id=tags; name=tags; comma separated; no spaces allowed; maxlength=40",
+              "required": true,
+              "content_meaning": "Two or three comma-separated keyword tokens",
+              "copy_unit": "all keywords as one comma-separated value",
+              "evidence_ids": ["pp-dom-form"]
+            },
+            {
+              "id": "main-image",
+              "label": "Image",
+              "order": 2,
+              "control": "single image file input; id=imageFile; name=imageFile; accept=image/*; drag/drop supported",
+              "required": "not expressed as an HTML required attribute",
+              "content_meaning": "Main article image; help recommends an image without embedded text",
+              "copy_unit": "manual file selection",
+              "evidence_ids": ["pp-dom-form", "pp-static-text"]
+            },
+            {
+              "id": "image-attribution",
+              "label": "Image Attribution",
+              "order": 3,
+              "control": "textarea; id=image_author; name=image_author; placeholder asks for author when attribution is required",
+              "required": false,
+              "content_meaning": "Credit for the main image",
+              "copy_unit": "image credit text",
+              "evidence_ids": ["pp-dom-form"]
+            },
+            {
+              "id": "active",
+              "label": "Publish (on) or Draft (off)",
+              "order": 4,
+              "control": "checkbox switch; id=flexSwitchCheckChecked; name=active",
+              "required": false,
+              "content_meaning": "Choose immediate publication or draft creation",
+              "copy_unit": "manual toggle instruction",
+              "evidence_ids": ["pp-dom-form"]
+            }
+          ],
+          "toolbars": [],
+          "actions": [
+            {
+              "id": "submit",
+              "label": "Submit",
+              "kind": "final form submission",
+              "side_effect": "external",
+              "evidence_ids": ["pp-dom-form"]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "link-dialog",
+      "label": "Insert Link",
+      "order": 2,
+      "entry_condition": "Open the link tool from the body toolbar",
+      "mutation_risk": "none",
+      "sections": [
+        {
+          "id": "link-fields",
+          "label": "Link fields",
+          "order": 1,
+          "location": "Modal dialog",
+          "fields": [
+            {
+              "id": "link-text",
+              "label": "Text to display",
+              "order": 1,
+              "control": "single-line text input",
+              "required": "dialog enables insertion only when valid",
+              "content_meaning": "Visible anchor text",
+              "copy_unit": "anchor text",
+              "evidence_ids": ["pp-link-dialog"]
+            },
+            {
+              "id": "link-url",
+              "label": "To what URL should this link go?",
+              "order": 2,
+              "control": "single-line URL input",
+              "required": "dialog enables insertion only when valid",
+              "content_meaning": "Link destination",
+              "copy_unit": "URL",
+              "evidence_ids": ["pp-link-dialog"]
+            },
+            {
+              "id": "link-new-window",
+              "label": "Open in new window",
+              "order": 3,
+              "control": "checkbox",
+              "required": false,
+              "content_meaning": "Target behavior",
+              "copy_unit": "manual checkbox instruction",
+              "evidence_ids": ["pp-link-dialog"]
+            }
+          ],
+          "toolbars": [],
+          "actions": [
+            {"id": "insert-link", "label": "Insert Link", "kind": "insert into draft", "side_effect": "possible", "evidence_ids": ["pp-link-dialog"]},
+            {"id": "close-link", "label": "Close", "kind": "dismiss dialog", "side_effect": "none", "evidence_ids": ["pp-link-dialog"]}
+          ]
+        }
+      ]
+    },
+    {
+      "id": "image-dialog",
+      "label": "Insert Image",
+      "order": 3,
+      "entry_condition": "Open the picture tool from the body toolbar",
+      "mutation_risk": "none",
+      "sections": [
+        {
+          "id": "image-fields",
+          "label": "Image sources",
+          "order": 1,
+          "location": "Modal dialog",
+          "fields": [
+            {
+              "id": "image-files",
+              "label": "Select from files",
+              "order": 1,
+              "control": "multi-file input; name=files; accept=image/*",
+              "required": false,
+              "content_meaning": "Upload one or more body images",
+              "copy_unit": "manual file selection",
+              "evidence_ids": ["pp-image-dialog"]
+            },
+            {
+              "id": "image-url",
+              "label": "Image URL",
+              "order": 2,
+              "control": "single-line URL input",
+              "required": false,
+              "content_meaning": "Insert a body image from a public URL",
+              "copy_unit": "image URL",
+              "evidence_ids": ["pp-image-dialog"]
+            }
+          ],
+          "toolbars": [],
+          "actions": [
+            {"id": "insert-image", "label": "Insert Image", "kind": "insert into draft", "side_effect": "possible", "evidence_ids": ["pp-image-dialog"]},
+            {"id": "close-image", "label": "Close", "kind": "dismiss dialog", "side_effect": "none", "evidence_ids": ["pp-image-dialog"]}
+          ]
+        }
+      ]
+    },
+    {
+      "id": "video-dialog",
+      "label": "Insert Video",
+      "order": 4,
+      "entry_condition": "Open the video tool from the body toolbar",
+      "mutation_risk": "none",
+      "sections": [
+        {
+          "id": "video-fields",
+          "label": "Video source",
+          "order": 1,
+          "location": "Modal dialog",
+          "fields": [
+            {
+              "id": "video-url",
+              "label": "Video URL (YouTube, Google Drive, Vimeo, Vine, Instagram, DailyMotion, Youku, Peertube)",
+              "order": 1,
+              "control": "single-line text input",
+              "required": "dialog enables insertion only when valid",
+              "content_meaning": "Public video URL from a supported provider",
+              "copy_unit": "video URL",
+              "evidence_ids": ["pp-video-dialog"]
+            }
+          ],
+          "toolbars": [],
+          "actions": [
+            {"id": "insert-video", "label": "Insert Video", "kind": "insert into draft", "side_effect": "possible", "evidence_ids": ["pp-video-dialog"]},
+            {"id": "close-video", "label": "Close", "kind": "dismiss dialog", "side_effect": "none", "evidence_ids": ["pp-video-dialog"]}
+          ]
+        }
+      ]
+    }
+  ],
+  "observed": {
+    "editor_model": "Single-page form with Summernote rich-text body editor",
+    "state_flow": ["article-form", "optional link-dialog, image-dialog, or video-dialog", "external submit boundary"],
+    "media_workflows": [
+      {"id": "body-image", "sources": ["multiple local image files", "public image URL"], "alt_text_field": false, "caption_field": false},
+      {"id": "main-image", "sources": ["single local image file or drag/drop"], "help": "Use images without embedded text so overlay text remains readable."},
+      {"id": "body-video", "sources": ["YouTube", "Google Drive", "Vimeo", "Vine", "Instagram", "DailyMotion", "Youku", "Peertube"], "input": "public video URL"}
+    ],
+    "link_workflows": [
+      {"id": "body-link", "fields": ["Text to display", "URL", "Open in new window"]}
+    ],
+    "publication_boundary": {"label": "Submit", "control": "button[type=submit]", "crossed_during_scan": false},
+    "evidence": [
+      {"id": "pp-dom-form", "state_id": "article-form", "method": "dom", "summary": "Live form inventory captured title, rich-text body, keyword, main image, attribution, publication toggle, and submit controls in page order."},
+      {"id": "pp-toolbar", "state_id": "article-form", "method": "aria", "summary": "Opened toolbar menus and live static labels identified Summernote formatting, block, link, media, source, fullscreen, and help capabilities."},
+      {"id": "pp-static-text", "state_id": "article-form", "method": "dom", "summary": "Live page text captured the prohibited-topic notice, quality guidance, and main-image recommendation."},
+      {"id": "pp-link-dialog", "state_id": "link-dialog", "method": "interaction", "summary": "Opened and dismissed Insert Link without inserting; recorded both text and URL fields plus new-window behavior."},
+      {"id": "pp-image-dialog", "state_id": "image-dialog", "method": "interaction", "summary": "Opened and dismissed Insert Image without uploading; recorded local multi-file and public-URL sources."},
+      {"id": "pp-video-dialog", "state_id": "video-dialog", "method": "interaction", "summary": "Opened and dismissed Insert Video; recorded the URL field and all named supported providers without inserting media."}
+    ]
+  },
+  "generation_contract": {
+    "profile_status_required": "complete",
+    "ordered_states": ["article-form", "link-dialog", "image-dialog", "video-dialog"],
+    "writable_field_mapping": [
+      {"source": "article.title", "target": "title", "copy_control": "copy title"},
+      {"source": "article.body_html", "target": "text", "copy_control": "copy rich body"},
+      {"source": "article.keywords_csv", "target": "keywords", "copy_control": "copy all keywords; no spaces; maximum 40 characters"},
+      {"source": "article.main_image_file", "target": "main-image", "copy_control": "show local file and manual upload instruction"},
+      {"source": "article.main_image_credit", "target": "image-attribution", "copy_control": "copy attribution"},
+      {"source": "publication.intent", "target": "active", "copy_control": "manual draft/publish toggle instruction"},
+      {"source": "promotion.anchor_text", "target": "link-text", "copy_control": "copy anchor text"},
+      {"source": "promotion.url", "target": "link-url", "copy_control": "copy URL"},
+      {"source": "article.body_image_url", "target": "image-url", "copy_control": "copy public image URL when used"},
+      {"source": "article.body_video_url", "target": "video-url", "copy_control": "copy supported public video URL when used"}
+    ],
+    "coverage_exclusions": [
+      {"field": "image-attribution", "condition": "Omit only when no attribution is required"},
+      {"field": "image-files", "condition": "Manual file picker cannot be represented as a clipboard value"}
+    ],
+    "manual_final_actions": ["Choose Draft or Publish with the active switch", "Review all content and media", "Click Submit manually"]
+  },
+  "drift_fingerprint": {
+    "route_patterns": ["https://www.promoteproject.com/publish-article"],
+    "major_sections": ["Submission notice", "Article content", "Article metadata and publication"],
+    "field_signatures": ["Title:text", "Text:contenteditable", "Keywords:text", "Image:file", "Image Attribution:textarea", "Publish (on) or Draft (off):checkbox"],
+    "toolbar_capabilities": ["style:H1-H6", "bold", "underline", "lists", "paragraph", "table", "link", "image", "video", "fullscreen", "code-view", "help"],
+    "publication_labels": ["Publish (on) or Draft (off)", "Submit"]
+  },
+  "limitations": [
+    "The final Submit action was intentionally not triggered.",
+    "The body-image dialog exposes no observed alt-text, caption, or credit field.",
+    "The file chooser and actual upload were intentionally not invoked."
+  ]
+}

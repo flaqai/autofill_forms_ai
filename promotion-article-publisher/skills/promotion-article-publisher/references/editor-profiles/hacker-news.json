@@ -1,0 +1,154 @@
+{
+  "platform": {
+    "id": "hacker-news",
+    "name": "Hacker News",
+    "domains": ["news.ycombinator.com"]
+  },
+  "scan": {
+    "scanned_at": "2026-09-01T04:48:08Z",
+    "browser": "BitBrowser Chromium 126 via CDP",
+    "locale": "en",
+    "authentication": "authenticated",
+    "status": "complete",
+    "blocked_states": []
+  },
+  "routes": [
+    {
+      "id": "submit",
+      "url_pattern": "https://news.ycombinator.com/submit",
+      "purpose": "Single-page URL or text submission form",
+      "auth_required": true
+    }
+  ],
+  "states": [
+    {
+      "id": "submit-form",
+      "label": "Submit",
+      "order": 1,
+      "entry_condition": "Open the authenticated /submit route",
+      "mutation_risk": "none",
+      "sections": [
+        {
+          "id": "submission-fields",
+          "label": "Submission fields",
+          "order": 1,
+          "location": "Main form, top to bottom",
+          "fields": [
+            {
+              "id": "title",
+              "label": "title",
+              "order": 1,
+              "control": "single-line text input; name=title",
+              "required": "not expressed as an HTML required attribute",
+              "content_meaning": "Submission title",
+              "copy_unit": "title",
+              "evidence_ids": ["hn-dom-form"]
+            },
+            {
+              "id": "url",
+              "label": "url",
+              "order": 2,
+              "control": "URL input; name=url",
+              "required": false,
+              "content_meaning": "Destination URL; leave blank for a discussion question",
+              "copy_unit": "url",
+              "evidence_ids": ["hn-dom-form", "hn-help-text"]
+            },
+            {
+              "id": "text",
+              "label": "text",
+              "order": 3,
+              "control": "plain textarea; name=text",
+              "required": false,
+              "content_meaning": "Discussion text or optional context for a URL submission",
+              "copy_unit": "plain text",
+              "evidence_ids": ["hn-dom-form", "hn-help-text"]
+            }
+          ],
+          "toolbars": [],
+          "actions": [
+            {
+              "id": "submit",
+              "label": "submit",
+              "kind": "final form submission",
+              "side_effect": "external",
+              "evidence_ids": ["hn-dom-form"]
+            }
+          ]
+        },
+        {
+          "id": "submission-help",
+          "label": "Submission behavior",
+          "order": 2,
+          "location": "Below the form",
+          "fields": [],
+          "toolbars": [],
+          "actions": [
+            {
+              "id": "bookmarklet",
+              "label": "bookmarklet",
+              "kind": "alternate submission route link",
+              "side_effect": "none",
+              "evidence_ids": ["hn-help-text"]
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "observed": {
+    "editor_model": "Minimal single-page plain HTML form",
+    "state_flow": ["submit-form", "external submit boundary"],
+    "media_workflows": [],
+    "link_workflows": [
+      {
+        "id": "url-submission",
+        "fields": ["url"],
+        "behavior": "Providing a URL creates a link submission; text remains optional. Leaving URL blank creates a discussion submission whose text appears at the top of the thread."
+      }
+    ],
+    "publication_boundary": {
+      "label": "submit",
+      "control": "input[type=submit]",
+      "crossed_during_scan": false
+    },
+    "evidence": [
+      {
+        "id": "hn-dom-form",
+        "state_id": "submit-form",
+        "method": "dom",
+        "summary": "Live DOM exposed the ordered title, url, and text controls followed by a submit input."
+      },
+      {
+        "id": "hn-help-text",
+        "state_id": "submit-form",
+        "method": "dom",
+        "summary": "Live static help text defined URL-versus-discussion behavior and identified the bookmarklet alternative."
+      }
+    ]
+  },
+  "generation_contract": {
+    "profile_status_required": "complete",
+    "ordered_states": ["submit-form"],
+    "writable_field_mapping": [
+      {"source": "article.title", "target": "title", "copy_control": "copy title"},
+      {"source": "promoted_url", "target": "url", "copy_control": "copy URL"},
+      {"source": "submission.context_text", "target": "text", "copy_control": "copy plain text"}
+    ],
+    "coverage_exclusions": [
+      {"field": "text", "condition": "May be deliberately omitted for a URL-only submission"}
+    ],
+    "manual_final_actions": ["Review title, URL, and optional text", "Click submit manually"]
+  },
+  "drift_fingerprint": {
+    "route_patterns": ["https://news.ycombinator.com/submit"],
+    "major_sections": ["Submission fields", "Submission behavior"],
+    "field_signatures": ["title:text", "url:url", "text:textarea"],
+    "toolbar_capabilities": [],
+    "publication_labels": ["submit"]
+  },
+  "limitations": [
+    "The final submit action was intentionally not triggered.",
+    "Server-side title length and moderation constraints are not expressed by the editor DOM."
+  ]
+}

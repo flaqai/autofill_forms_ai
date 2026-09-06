@@ -1,0 +1,404 @@
+{
+  "platform": {
+    "id": "ameba",
+    "name": "Ameba Blog",
+    "domains": ["blog.ameba.jp"]
+  },
+  "scan": {
+    "scanned_at": "2026-09-01T04:48:08Z",
+    "browser": "BitBrowser Chromium 126 via CDP",
+    "locale": "ja",
+    "authentication": "authenticated",
+    "status": "complete",
+    "blocked_states": []
+  },
+  "routes": [
+    {
+      "id": "new-entry",
+      "url_pattern": "https://blog.ameba.jp/ucs/entry/srventryinsertinput.do",
+      "purpose": "Create a blog entry",
+      "auth_required": true
+    }
+  ],
+  "states": [
+    {
+      "id": "editor",
+      "label": "ブログを書く",
+      "order": 1,
+      "entry_condition": "Open the authenticated new-entry route in normal display mode",
+      "mutation_risk": "none",
+      "sections": [
+        {
+          "id": "title-and-body",
+          "label": "Title and body",
+          "order": 1,
+          "location": "Main column, top",
+          "fields": [
+            {
+              "id": "entry-title",
+              "label": "タイトル",
+              "order": 1,
+              "control": "single-line text input; name=entry_title; maxlength=48; placeholder=タイトルを入力してください",
+              "required": true,
+              "content_meaning": "Visible article title",
+              "copy_unit": "title",
+              "evidence_ids": ["ameba-dom-full"]
+            },
+            {
+              "id": "entry-body",
+              "label": "本文",
+              "order": 2,
+              "control": "CKEditor-style iframe WYSIWYG body with alternate HTML source textarea",
+              "required": "not expressed as an HTML required attribute",
+              "content_meaning": "Article body",
+              "copy_unit": "rich body in normal mode or HTML in HTML mode",
+              "evidence_ids": ["ameba-dom-full", "ameba-html-mode"]
+            }
+          ],
+          "toolbars": [
+            {
+              "id": "body-toolbar",
+              "owner_field": "entry-body",
+              "items": ["font size", "heading", "bold", "italic", "underline", "strikethrough", "text color", "marker color", "clear formatting", "link", "table of contents", "left/center/right alignment", "unordered list", "ordered list", "quote", "undo", "redo"],
+              "evidence_ids": ["ameba-toolbar"]
+            },
+            {
+              "id": "display-modes",
+              "owner_field": "entry-body",
+              "items": ["通常表示", "HTML表示", "デザイン幅で表示"],
+              "evidence_ids": ["ameba-dom-full", "ameba-html-mode"]
+            }
+          ],
+          "actions": [
+            {"id": "open-link-dialog", "label": "リンクの挿入", "kind": "open reversible dialog", "side_effect": "none", "evidence_ids": ["ameba-link-dialog"]}
+          ]
+        },
+        {
+          "id": "media-side-panel",
+          "label": "サイドパネル",
+          "order": 2,
+          "location": "Right side of editor",
+          "fields": [
+            {
+              "id": "photo-upload",
+              "label": "アップロード",
+              "order": 1,
+              "control": "multi-file input; id=js-input-files; name=thumbnail; accepts PNG, JPEG, GIF",
+              "required": false,
+              "content_meaning": "Upload reusable photos for insertion or cover selection",
+              "copy_unit": "manual file selection",
+              "evidence_ids": ["ameba-dom-full"]
+            },
+            {
+              "id": "photo-size",
+              "label": "貼付けサイズ",
+              "order": 2,
+              "control": "radio options 原寸, 小, 中, 大",
+              "required": false,
+              "content_meaning": "Inserted image display size",
+              "copy_unit": "manual option instruction",
+              "evidence_ids": ["ameba-dom-full"]
+            }
+          ],
+          "toolbars": [
+            {
+              "id": "side-panel-tabs",
+              "owner_field": "entry-body",
+              "items": ["写真・動画", "絵文字", "デザイン", "Pick", "YouTube", "写真", "動画"],
+              "evidence_ids": ["ameba-dom-full"]
+            }
+          ],
+          "actions": []
+        },
+        {
+          "id": "settings",
+          "label": "Entry settings",
+          "order": 3,
+          "location": "Below body editor",
+          "fields": [
+            {
+              "id": "theme",
+              "label": "テーマ",
+              "order": 1,
+              "control": "select; id=js-themeSelector; name=theme_id",
+              "required": "account-controlled selection",
+              "content_meaning": "Blog theme/category",
+              "copy_unit": "manual selection instruction",
+              "evidence_ids": ["ameba-dom-full"]
+            },
+            {
+              "id": "cover-image",
+              "label": "カバー画像",
+              "order": 2,
+              "control": "image chooser opened by 画像を選択する",
+              "required": false,
+              "content_meaning": "Cover image selected from previously uploaded images",
+              "copy_unit": "manual chooser instruction",
+              "evidence_ids": ["ameba-cover-dialog"]
+            },
+            {
+              "id": "hashtags",
+              "label": "#ハッシュタグ",
+              "order": 3,
+              "control": "token input; id=js-hashtag-input; placeholder=入力する; maximum 10 tags",
+              "required": false,
+              "content_meaning": "Article hashtags",
+              "copy_unit": "one tag per copy control plus optional copy-all value",
+              "evidence_ids": ["ameba-hashtags"]
+            },
+            {
+              "id": "meta-title",
+              "label": "検索表示タイトルを入力",
+              "order": 4,
+              "control": "single-line text input; id=meta_title; name=meta_title; maxlength=48",
+              "required": false,
+              "content_meaning": "Search-result title; not inserted into the article body",
+              "copy_unit": "SEO title",
+              "evidence_ids": ["ameba-dom-full"]
+            },
+            {
+              "id": "publish-date",
+              "label": "投稿日時",
+              "order": 5,
+              "control": "date/time picker with year, month, day, hour, minute, and second fields",
+              "required": true,
+              "content_meaning": "Publish time, with current time available",
+              "copy_unit": "manual current-time or schedule instruction",
+              "evidence_ids": ["ameba-date-picker"]
+            },
+            {
+              "id": "deny-comment",
+              "label": "コメント：受け付けない",
+              "order": 6,
+              "control": "checkbox; name=deny_comment",
+              "required": false,
+              "content_meaning": "Disable comments",
+              "copy_unit": "manual checkbox instruction",
+              "evidence_ids": ["ameba-dom-full"]
+            },
+            {
+              "id": "deny-reblog",
+              "label": "リブログ：受け付けない",
+              "order": 7,
+              "control": "checkbox; name=deny_reblog",
+              "required": false,
+              "content_meaning": "Disable reblogging",
+              "copy_unit": "manual checkbox instruction",
+              "evidence_ids": ["ameba-dom-full"]
+            },
+            {
+              "id": "amember-only",
+              "label": "公開範囲：アメンバー限定",
+              "order": 8,
+              "control": "checkbox; name=amember_flg",
+              "required": false,
+              "content_meaning": "Restrict visibility to Ameba members",
+              "copy_unit": "manual checkbox instruction",
+              "evidence_ids": ["ameba-dom-full"]
+            }
+          ],
+          "toolbars": [],
+          "actions": [
+            {"id": "new-theme", "label": "新規作成", "kind": "create theme outside article flow", "side_effect": "external", "evidence_ids": ["ameba-dom-full"]},
+            {"id": "choose-cover", "label": "画像を選択する", "kind": "open reversible chooser", "side_effect": "none", "evidence_ids": ["ameba-cover-dialog"]}
+          ]
+        },
+        {
+          "id": "editor-actions",
+          "label": "Save, preview, and publish actions",
+          "order": 4,
+          "location": "Page actions",
+          "fields": [],
+          "toolbars": [],
+          "actions": [
+            {"id": "preview", "label": "プレビュー", "kind": "open non-submitting preview", "side_effect": "none", "evidence_ids": ["ameba-preview"]},
+            {"id": "save-draft", "label": "下書き保存", "kind": "save draft", "side_effect": "external", "evidence_ids": ["ameba-dom-full"]},
+            {"id": "publish", "label": "投稿する", "kind": "final publish action", "side_effect": "external", "evidence_ids": ["ameba-dom-full", "ameba-preview"]}
+          ]
+        }
+      ]
+    },
+    {
+      "id": "link-dialog",
+      "label": "リンクの挿入",
+      "order": 2,
+      "entry_condition": "Open the body link tool",
+      "mutation_risk": "none",
+      "sections": [
+        {
+          "id": "link-fields",
+          "label": "Link fields",
+          "order": 1,
+          "location": "Modal dialog",
+          "fields": [
+            {
+              "id": "link-url",
+              "label": "URL 必須",
+              "order": 1,
+              "control": "URL input; id=js-linkDialogInput; placeholder=https://",
+              "required": true,
+              "content_meaning": "Link destination",
+              "copy_unit": "URL",
+              "evidence_ids": ["ameba-link-dialog"]
+            },
+            {
+              "id": "text-link-display",
+              "label": "テキストリンクで表示",
+              "order": 2,
+              "control": "toggle/button",
+              "required": false,
+              "content_meaning": "Display inserted link as text",
+              "copy_unit": "manual toggle instruction",
+              "evidence_ids": ["ameba-link-dialog"]
+            }
+          ],
+          "toolbars": [],
+          "actions": [
+            {"id": "insert-link", "label": "リンクを挿入する", "kind": "insert into draft", "side_effect": "possible", "evidence_ids": ["ameba-link-dialog"]},
+            {"id": "cancel-link", "label": "キャンセル", "kind": "dismiss dialog", "side_effect": "none", "evidence_ids": ["ameba-link-dialog"]}
+          ]
+        }
+      ]
+    },
+    {
+      "id": "cover-dialog",
+      "label": "カバー画像選択",
+      "order": 3,
+      "entry_condition": "Click 画像を選択する",
+      "mutation_risk": "none",
+      "sections": [
+        {
+          "id": "cover-library",
+          "label": "Uploaded image library",
+          "order": 1,
+          "location": "Cover chooser",
+          "fields": [
+            {
+              "id": "cover-library-image",
+              "label": "アップロード済み画像",
+              "order": 1,
+              "control": "image selection grid with year and month navigation",
+              "required": false,
+              "content_meaning": "Choose one uploaded image as cover",
+              "copy_unit": "manual image selection",
+              "evidence_ids": ["ameba-cover-dialog"]
+            }
+          ],
+          "toolbars": [],
+          "actions": [
+            {"id": "set-cover", "label": "カバーに設定する", "kind": "apply cover to draft", "side_effect": "possible", "evidence_ids": ["ameba-cover-dialog"]},
+            {"id": "close-cover", "label": "ダイアログを閉じる", "kind": "dismiss chooser", "side_effect": "none", "evidence_ids": ["ameba-cover-dialog"]}
+          ]
+        }
+      ]
+    },
+    {
+      "id": "schedule-picker",
+      "label": "投稿日時を選択",
+      "order": 4,
+      "entry_condition": "Open the publish-date picker",
+      "mutation_risk": "none",
+      "sections": [
+        {
+          "id": "schedule-fields",
+          "label": "Date and time",
+          "order": 1,
+          "location": "Date/time picker",
+          "fields": [
+            {"id": "year", "label": "yyyy", "order": 1, "control": "numeric text input; id=js-calInputYear", "required": true, "content_meaning": "Year", "copy_unit": "year", "evidence_ids": ["ameba-date-picker"]},
+            {"id": "month", "label": "MM", "order": 2, "control": "numeric text input; id=js-calInputMonth", "required": true, "content_meaning": "Month", "copy_unit": "month", "evidence_ids": ["ameba-date-picker"]},
+            {"id": "day", "label": "dd", "order": 3, "control": "numeric text input; id=js-calInputDay", "required": true, "content_meaning": "Day", "copy_unit": "day", "evidence_ids": ["ameba-date-picker"]},
+            {"id": "hours", "label": "00 (hour)", "order": 4, "control": "numeric text input; id=js-calInputHours", "required": true, "content_meaning": "Hour", "copy_unit": "hour", "evidence_ids": ["ameba-date-picker"]},
+            {"id": "minutes", "label": "00 (minute)", "order": 5, "control": "numeric text input; id=js-calInputMinutes", "required": true, "content_meaning": "Minute", "copy_unit": "minute", "evidence_ids": ["ameba-date-picker"]},
+            {"id": "seconds", "label": "00 (second)", "order": 6, "control": "numeric text input; id=js-calInputSeconds", "required": true, "content_meaning": "Second", "copy_unit": "second", "evidence_ids": ["ameba-date-picker"]}
+          ],
+          "toolbars": [],
+          "actions": [
+            {"id": "set-current-time", "label": "現在時刻", "kind": "populate picker", "side_effect": "possible", "evidence_ids": ["ameba-date-picker"]},
+            {"id": "confirm-time", "label": "決定", "kind": "apply schedule to draft", "side_effect": "possible", "evidence_ids": ["ameba-date-picker"]}
+          ]
+        }
+      ]
+    },
+    {
+      "id": "preview",
+      "label": "プレビュー",
+      "order": 5,
+      "entry_condition": "Open the Preview tab",
+      "mutation_risk": "none",
+      "sections": [
+        {
+          "id": "preview-actions",
+          "label": "Preview actions",
+          "order": 1,
+          "location": "Preview state",
+          "fields": [],
+          "toolbars": [],
+          "actions": [
+            {"id": "return-editor", "label": "戻る", "kind": "return to editor", "side_effect": "none", "evidence_ids": ["ameba-preview"]},
+            {"id": "publish-from-preview", "label": "投稿する", "kind": "final publish action", "side_effect": "external", "evidence_ids": ["ameba-preview"]}
+          ]
+        }
+      ]
+    }
+  ],
+  "observed": {
+    "editor_model": "Multi-region WYSIWYG iframe editor with HTML source mode, media sidebar, below-editor metadata, reversible preview, and direct publish boundary",
+    "state_flow": ["editor", "optional link-dialog, cover-dialog, or schedule-picker", "optional preview", "external 投稿する boundary"],
+    "media_workflows": [
+      {"id": "photo-upload", "source": "local files", "accept": ["image/png", "image/jpeg", "image/gif"], "multiple": true, "sizes": ["原寸", "小", "中", "大"]},
+      {"id": "cover-image", "source": "uploaded image library", "public_url_field": false},
+      {"id": "video", "source": "app only according to live help text"}
+    ],
+    "link_workflows": [
+      {"id": "body-link", "fields": ["required URL", "テキストリンクで表示 toggle"], "anchor_text_field": false}
+    ],
+    "publication_boundary": {"label": "投稿する", "locations": ["editor", "preview"], "crossed_during_scan": false},
+    "evidence": [
+      {"id": "ameba-dom-full", "state_id": "editor", "method": "dom", "summary": "Live full-page DOM and field-context probes captured ordered title, body, media, theme, cover, hashtag, SEO, date, comment, reblog, visibility, save, preview, and publish controls."},
+      {"id": "ameba-toolbar", "state_id": "editor", "method": "aria", "summary": "Live accessible controls resolved body formatting, alignment, list, quote, link, table-of-contents, and undo/redo capabilities."},
+      {"id": "ameba-html-mode", "state_id": "editor", "method": "interaction", "summary": "Safely switched between 通常表示 and HTML表示 and observed a source textarea without editing content."},
+      {"id": "ameba-hashtags", "state_id": "editor", "method": "interaction", "summary": "Opened hashtag input without adding tags; observed token input, Enter-based entry, and remaining count indicating a maximum of ten."},
+      {"id": "ameba-link-dialog", "state_id": "link-dialog", "method": "interaction", "summary": "Opened and cancelled the link dialog; observed required URL, https:// placeholder, text-link display toggle, and disabled empty insertion action."},
+      {"id": "ameba-cover-dialog", "state_id": "cover-dialog", "method": "interaction", "summary": "Opened and dismissed the cover chooser; observed uploaded-image grid, date navigation, set-cover action, and no public-URL field."},
+      {"id": "ameba-date-picker", "state_id": "schedule-picker", "method": "interaction", "summary": "Opened and dismissed the date/time picker; observed year through seconds inputs plus current-time and confirm actions."},
+      {"id": "ameba-preview", "state_id": "preview", "method": "interaction", "summary": "Opened preview and returned without publishing; identified the return action and final 投稿する boundary."
+      }
+    ]
+  },
+  "generation_contract": {
+    "profile_status_required": "complete",
+    "ordered_states": ["editor", "link-dialog", "cover-dialog", "schedule-picker", "preview"],
+    "writable_field_mapping": [
+      {"source": "article.title", "target": "entry-title", "copy_control": "copy title"},
+      {"source": "article.body_html", "target": "entry-body", "copy_control": "copy body HTML for HTML表示; also expose rich/plain fallback"},
+      {"source": "article.theme_hint", "target": "theme", "copy_control": "manual selection instruction only"},
+      {"source": "article.cover_image_file", "target": "cover-image", "copy_control": "show file path/preview and manual uploaded-library selection instruction"},
+      {"source": "article.hashtags", "target": "hashtags", "copy_control": "one copy button per tag and a separate copy-all button; maximum 10"},
+      {"source": "article.seo_title", "target": "meta-title", "copy_control": "copy SEO title; maximum 48 characters"},
+      {"source": "publication.schedule", "target": "publish-date", "copy_control": "manual current-time or date/time instruction"},
+      {"source": "publication.comments_disabled", "target": "deny-comment", "copy_control": "manual checkbox instruction"},
+      {"source": "publication.reblog_disabled", "target": "deny-reblog", "copy_control": "manual checkbox instruction"},
+      {"source": "publication.members_only", "target": "amember-only", "copy_control": "manual checkbox instruction"},
+      {"source": "promotion.url", "target": "link-url", "copy_control": "copy URL"}
+    ],
+    "coverage_exclusions": [
+      {"field": "photo-upload", "condition": "Manual file chooser cannot be represented as a clipboard value"},
+      {"field": "text-link-display", "condition": "The observed dialog provides no separate anchor-text input; article body must already contain the desired linked text context"},
+      {"field": "theme", "condition": "Options are account-controlled and must be selected manually"}
+    ],
+    "manual_final_actions": ["Upload/select media and cover", "Apply theme, schedule, comment, reblog, and audience settings", "Preview", "Click 投稿する manually"]
+  },
+  "drift_fingerprint": {
+    "route_patterns": ["https://blog.ameba.jp/ucs/entry/srventryinsertinput.do"],
+    "major_sections": ["Title and body", "サイドパネル", "テーマ", "カバー画像", "#ハッシュタグ", "検索強化サポート", "投稿日時", "コメント", "リブログ", "公開範囲"],
+    "field_signatures": ["タイトル:text maxlength=48", "本文:iframe+HTML textarea", "アップロード:file multiple", "テーマ:select", "カバー画像:image chooser", "#ハッシュタグ:token input max=10", "検索表示タイトル:text maxlength=48", "投稿日時:datetime picker", "コメント:checkbox", "リブログ:checkbox", "公開範囲:checkbox"],
+    "toolbar_capabilities": ["font-size", "heading", "bold", "italic", "underline", "strikethrough", "text-color", "marker", "clear-format", "link", "toc", "alignment", "unordered-list", "ordered-list", "quote", "undo", "redo", "html-source-mode"],
+    "publication_labels": ["下書き保存", "プレビュー", "投稿する"]
+  },
+  "limitations": [
+    "The final 投稿する action and draft-save action were intentionally not triggered.",
+    "Font-size and heading option values were not enumerated because opening them did not expose stable accessible option names, but their capabilities are verified.",
+    "The upload file chooser and actual upload were intentionally not invoked."
+  ]
+}

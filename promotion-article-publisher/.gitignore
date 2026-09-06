@@ -1,0 +1,8 @@
+.DS_Store
+.env
+.env.*
+!.env.example
+**/r2.config.json
+node_modules/
+dist/
+*.log
