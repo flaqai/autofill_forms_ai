@@ -1,0 +1,240 @@
+{
+  "platform": {
+    "id": "velog",
+    "name": "Velog",
+    "domains": ["velog.io"]
+  },
+  "scan": {
+    "scanned_at": "2026-09-01T04:48:08Z",
+    "browser": "BitBrowser Chromium 126 via CDP",
+    "locale": "ko",
+    "authentication": "authenticated",
+    "status": "complete",
+    "blocked_states": []
+  },
+  "routes": [
+    {
+      "id": "write",
+      "url_pattern": "https://velog.io/write",
+      "purpose": "Create a new post",
+      "auth_required": true
+    }
+  ],
+  "states": [
+    {
+      "id": "editor",
+      "label": "새 글 작성",
+      "order": 1,
+      "entry_condition": "Open the authenticated /write route",
+      "mutation_risk": "none",
+      "sections": [
+        {
+          "id": "article-fields",
+          "label": "Article fields",
+          "order": 1,
+          "location": "Editor top to center",
+          "fields": [
+            {
+              "id": "title",
+              "label": "제목을 입력하세요",
+              "order": 1,
+              "control": "textarea",
+              "required": "not expressed as an HTML required attribute",
+              "content_meaning": "Post title",
+              "copy_unit": "title",
+              "evidence_ids": ["velog-dom-editor"]
+            },
+            {
+              "id": "tags",
+              "label": "태그를 입력하세요",
+              "order": 2,
+              "control": "single-line tag input",
+              "required": false,
+              "content_meaning": "Post tags",
+              "copy_unit": "one tag per copy control plus an optional copy-all value",
+              "evidence_ids": ["velog-dom-editor"]
+            },
+            {
+              "id": "body",
+              "label": "당신의 이야기를 적어보세요...",
+              "order": 3,
+              "control": "CodeMirror-backed Markdown textarea",
+              "required": "not expressed as an HTML required attribute",
+              "content_meaning": "Markdown post body",
+              "copy_unit": "Markdown body",
+              "evidence_ids": ["velog-dom-editor"]
+            }
+          ],
+          "toolbars": [
+            {
+              "id": "markdown-toolbar",
+              "owner_field": "body",
+              "items": ["H1", "H2", "H3", "H4", "bold", "italic", "strikethrough", "blockquote", "link", "image", "code block"],
+              "evidence_ids": ["velog-dom-editor", "velog-toolbar"]
+            }
+          ],
+          "actions": []
+        },
+        {
+          "id": "bottom-actions",
+          "label": "Editor actions",
+          "order": 2,
+          "location": "Fixed bottom bar",
+          "fields": [],
+          "toolbars": [],
+          "actions": [
+            {"id": "exit", "label": "나가기", "kind": "exit editor", "side_effect": "possible", "evidence_ids": ["velog-dom-editor"]},
+            {"id": "save-draft", "label": "임시저장", "kind": "save draft", "side_effect": "external", "evidence_ids": ["velog-dom-editor"]},
+            {"id": "proceed-publish", "label": "출간하기", "kind": "open publication settings; may save draft", "side_effect": "possible", "evidence_ids": ["velog-dom-editor"]}
+          ]
+        }
+      ]
+    },
+    {
+      "id": "publication-settings",
+      "label": "출간 설정",
+      "order": 2,
+      "entry_condition": "Select 출간하기 from the editor bottom bar",
+      "mutation_risk": "possible draft-state change; final publication is separate",
+      "sections": [
+        {
+          "id": "post-preview",
+          "label": "포스트 미리보기",
+          "order": 1,
+          "location": "Publication-settings left panel",
+          "fields": [
+            {"id": "thumbnail", "label": "썸네일 업로드", "order": 1, "control": "button that opens a native file chooser", "required": false, "content_meaning": "Post thumbnail", "copy_unit": "manual local-file selection", "evidence_ids": ["velog-publication-settings", "velog-thumbnail-workflow"]},
+            {"id": "summary", "label": "당신의 포스트를 짧게 소개해보세요.", "order": 2, "control": "textarea; live counter shows 0/150 when empty", "required": false, "content_meaning": "Short post introduction used in the preview", "copy_unit": "summary up to 150 characters", "evidence_ids": ["velog-publication-settings"]}
+          ],
+          "toolbars": [],
+          "actions": []
+        },
+        {
+          "id": "visibility-settings",
+          "label": "공개 설정",
+          "order": 2,
+          "location": "Publication-settings right panel",
+          "fields": [
+            {"id": "visibility", "label": "공개 설정", "order": 1, "control": "button choices: 전체 공개 / 비공개", "required": true, "content_meaning": "Public or private post visibility", "copy_unit": "manual choice instruction", "evidence_ids": ["velog-publication-settings"]}
+          ],
+          "toolbars": [],
+          "actions": []
+        },
+        {
+          "id": "url-settings",
+          "label": "URL 설정",
+          "order": 3,
+          "location": "Publication-settings right panel",
+          "fields": [
+            {"id": "url-slug", "label": "URL 설정", "order": 1, "control": "single-line input appended after an account-specific /@username/ prefix", "required": true, "content_meaning": "Post URL slug", "copy_unit": "URL slug only; account prefix is supplied by Velog", "evidence_ids": ["velog-publication-settings"]}
+          ],
+          "toolbars": [],
+          "actions": []
+        },
+        {
+          "id": "series-settings",
+          "label": "시리즈 설정",
+          "order": 4,
+          "location": "Publication-settings right panel",
+          "fields": [
+            {"id": "series", "label": "시리즈에 추가하기", "order": 1, "control": "account-dependent series chooser", "required": false, "content_meaning": "Optional series association", "copy_unit": "manual account selection instruction", "evidence_ids": ["velog-publication-settings", "velog-series-chooser"]}
+          ],
+          "toolbars": [],
+          "actions": [
+            {"id": "open-series-chooser", "label": "시리즈에 추가하기", "kind": "open series chooser", "side_effect": "none", "evidence_ids": ["velog-series-chooser"]}
+          ]
+        },
+        {
+          "id": "publish-actions",
+          "label": "Publish actions",
+          "order": 5,
+          "location": "Publication-settings lower-right panel",
+          "fields": [],
+          "toolbars": [],
+          "actions": [
+            {"id": "cancel-publication", "label": "취소", "kind": "return to editor", "side_effect": "none", "evidence_ids": ["velog-publication-settings"]},
+            {"id": "final-publish", "label": "출간하기", "kind": "final publication", "side_effect": "external", "evidence_ids": ["velog-publication-settings"]}
+          ]
+        }
+      ]
+    },
+    {
+      "id": "series-chooser",
+      "label": "시리즈 설정",
+      "order": 3,
+      "entry_condition": "Select 시리즈에 추가하기 from publication settings",
+      "mutation_risk": "none until a series is selected or created",
+      "sections": [
+        {
+          "id": "series-options",
+          "label": "Series options",
+          "order": 1,
+          "location": "Publication-settings right panel replacement",
+          "fields": [
+            {"id": "existing-series", "label": "기존 시리즈", "order": 1, "control": "account-dependent list", "required": false, "content_meaning": "Choose an existing series", "copy_unit": "manual account selection instruction", "evidence_ids": ["velog-series-chooser"]},
+            {"id": "new-series-name", "label": "새로운 시리즈 이름을 입력하세요", "order": 2, "control": "input; name=name", "required": false, "content_meaning": "Create or identify a new series", "copy_unit": "series name", "evidence_ids": ["velog-series-chooser"]}
+          ],
+          "toolbars": [],
+          "actions": [
+            {"id": "cancel-series", "label": "취소", "kind": "return to publication settings", "side_effect": "none", "evidence_ids": ["velog-series-chooser"]},
+            {"id": "choose-series", "label": "선택하기", "kind": "apply series selection", "side_effect": "possible", "evidence_ids": ["velog-series-chooser"]}
+          ]
+        }
+      ]
+    }
+  ],
+  "observed": {
+    "editor_model": "CodeMirror-backed Markdown editor with title, tags, toolbar, fixed bottom actions, and a separate publication-settings flow",
+    "state_flow": ["editor", "publication-settings", "optional series-chooser", "manual final 출간하기"],
+    "media_workflows": [
+      {"id": "body-image", "trigger": "ql-image toolbar button", "result": "Opens a native file-selection workflow; no public image-URL field is exposed."},
+      {"id": "thumbnail-image", "trigger": "썸네일 업로드 button in publication settings", "result": "Opens a native file-selection workflow; no public image-URL field is exposed."}
+    ],
+    "link_workflows": [
+      {"id": "body-link", "trigger": "Select Markdown editor text and choose the ql-link toolbar button", "result": "An inline input with placeholder URL 을 입력하세요 and a 확인 button appears; the quick page must provide anchor text and URL separately."}
+    ],
+    "publication_boundary": {"label": "the second 출간하기 button inside publication settings", "crossed_during_scan": false},
+    "evidence": [
+      {"id": "velog-dom-editor", "state_id": "editor", "method": "dom", "summary": "Live DOM captured title, tag input, CodeMirror body, fixed bottom actions, and all toolbar class signatures."},
+      {"id": "velog-toolbar", "state_id": "editor", "method": "aria", "summary": "Live controls and stable toolbar classes resolved H1-H4, emphasis, quote, link, image, and code-block capabilities."},
+      {"id": "velog-link-workflow", "state_id": "editor", "method": "temporary-input interaction", "summary": "Selected a disposable CodeMirror marker, opened the link control, recorded the URL input and confirmation action, then removed the marker and reloaded without saving."},
+      {"id": "velog-thumbnail-workflow", "state_id": "publication-settings", "method": "interaction", "summary": "Triggered the thumbnail upload button and confirmed that it uses a native file-selection workflow rather than an in-page URL field."},
+      {"id": "velog-publication-settings", "state_id": "publication-settings", "method": "interaction", "summary": "Opened publication settings and recorded preview, summary, visibility, URL slug, series, cancel, and final publish controls; restored the visibility choice and did not publish."},
+      {"id": "velog-series-chooser", "state_id": "series-chooser", "method": "interaction", "summary": "Opened the series chooser, recorded existing/new-series controls and actions, then cancelled without changing the post."}
+    ]
+  },
+  "generation_contract": {
+    "profile_status_required": "complete",
+    "ordered_states": ["editor", "publication-settings", "series-chooser"],
+    "writable_field_mapping": [
+      {"source": "article.title", "target": "title", "copy_control": "copy title"},
+      {"source": "article.tags", "target": "tags", "copy_control": "one copy button per tag and optional copy-all"},
+      {"source": "article.body_markdown", "target": "body", "copy_control": "copy Markdown body"},
+      {"source": "article.promotion_anchor_text", "target": "body-link", "copy_control": "copy anchor text separately"},
+      {"source": "article.promotion_url", "target": "body-link", "copy_control": "copy URL separately"},
+      {"source": "article.thumbnail_file", "target": "thumbnail", "copy_control": "show local file and manual upload instruction"},
+      {"source": "article.summary", "target": "summary", "copy_control": "copy summary capped at 150 characters"},
+      {"source": "publication.visibility", "target": "visibility", "copy_control": "show manual public/private choice"},
+      {"source": "publication.url_slug", "target": "url-slug", "copy_control": "copy slug only"},
+      {"source": "publication.series", "target": "series", "copy_control": "show manual account selection or copy new series name"}
+    ],
+    "coverage_exclusions": [
+      {"field": "body and thumbnail image files", "condition": "Native file chooser requires manual local-file selection; no URL field is available"},
+      {"field": "existing series choices", "condition": "Available values are account-controlled and must not be persisted in the reusable profile"},
+      {"field": "account URL prefix", "condition": "Velog supplies it from the signed-in account; only the slug belongs in the quick-publish page"}
+    ],
+    "manual_final_actions": ["Open the first 출간하기 to review publication settings", "Review the account-supplied URL prefix and optional series", "Keep the second/final 출간하기 manual"]
+  },
+  "drift_fingerprint": {
+    "route_patterns": ["https://velog.io/write"],
+    "major_sections": ["Article fields", "Editor actions", "포스트 미리보기", "공개 설정", "URL 설정", "시리즈 설정", "Publish actions"],
+    "field_signatures": ["title:textarea", "tags:text", "body:CodeMirror Markdown textarea", "summary:textarea max 150", "visibility:button choices", "url-slug:input"],
+    "toolbar_capabilities": ["H1", "H2", "H3", "H4", "bold", "italic", "strikethrough", "blockquote", "link", "image", "code-block"],
+    "publication_labels": ["임시저장", "출간하기", "취소", "전체 공개", "비공개", "시리즈에 추가하기"]
+  },
+  "limitations": [
+    "Draft save, final publication, actual file selection, and series creation were intentionally not completed.",
+    "Tag count/length limits are not expressed by the initial editor DOM.",
+    "Existing series values and the URL account prefix are dynamic account data and are intentionally excluded from the reusable profile."
+  ]
+}

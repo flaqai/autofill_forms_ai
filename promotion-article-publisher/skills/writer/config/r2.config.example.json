@@ -1,0 +1,10 @@
+{
+  "accountId": "your-cloudflare-account-id",
+  "bucket": "your-r2-bucket-name",
+  "accessKeyId": "your-r2-access-key-id",
+  "secretAccessKey": "your-r2-secret-access-key",
+  "region": "auto",
+  "publicBaseUrl": "https://cdn.example.com",
+  "keyPrefix": "",
+  "blogDirectory": "blog"
+}

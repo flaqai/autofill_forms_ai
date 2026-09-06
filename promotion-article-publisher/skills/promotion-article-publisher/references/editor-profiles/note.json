@@ -1,0 +1,346 @@
+{
+  "platform": {
+    "id": "note",
+    "name": "note",
+    "domains": ["note.com", "editor.note.com"]
+  },
+  "scan": {
+    "scanned_at": "2026-09-01T04:48:08Z",
+    "browser": "BitBrowser Chromium 126 via CDP",
+    "locale": "ja",
+    "authentication": "authenticated",
+    "status": "complete",
+    "blocked_states": []
+  },
+  "routes": [
+    {
+      "id": "edit-note",
+      "url_pattern": "https://editor.note.com/notes/{note-id}/edit/",
+      "purpose": "Edit an existing note draft",
+      "auth_required": true
+    }
+  ],
+  "states": [
+    {
+      "id": "editor",
+      "label": "記事編集",
+      "order": 1,
+      "entry_condition": "Open an authenticated note editor URL",
+      "mutation_risk": "none",
+      "sections": [
+        {
+          "id": "editor-header",
+          "label": "Editor header",
+          "order": 1,
+          "location": "Fixed top area",
+          "fields": [],
+          "toolbars": [],
+          "actions": [
+            {"id": "close-editor", "label": "閉じる", "kind": "exit editor", "side_effect": "possible", "evidence_ids": ["note-dom-editor"]},
+            {"id": "more", "label": "その他", "kind": "open menu", "side_effect": "none", "evidence_ids": ["note-more-menu"]},
+            {"id": "save-draft", "label": "下書き保存", "kind": "save draft", "side_effect": "external", "evidence_ids": ["note-dom-editor"]},
+            {"id": "proceed-publication", "label": "公開に進む", "kind": "open publication settings; may save draft", "side_effect": "possible", "evidence_ids": ["note-dom-editor"]}
+          ]
+        },
+        {
+          "id": "article-fields",
+          "label": "Article fields",
+          "order": 2,
+          "location": "Main editor canvas",
+          "fields": [
+            {
+              "id": "title",
+              "label": "記事タイトル",
+              "order": 1,
+              "control": "textarea; placeholder=記事タイトル",
+              "required": "not expressed as an HTML required attribute",
+              "content_meaning": "Article title",
+              "copy_unit": "title",
+              "evidence_ids": ["note-dom-editor"]
+            },
+            {
+              "id": "body",
+              "label": "本文",
+              "order": 2,
+              "control": "ProseMirror contenteditable block editor; role=textbox",
+              "required": "not expressed as an HTML required attribute",
+              "content_meaning": "Article body",
+              "copy_unit": "rich/plain body pasted into the block editor",
+              "evidence_ids": ["note-dom-editor"]
+            }
+          ],
+          "toolbars": [
+            {
+              "id": "insert-menu",
+              "owner_field": "body",
+              "items": ["AIアシスタント", "画像", "音声", "埋め込み", "ファイル", "コミック", "目次", "大見出し", "小見出し", "箇条書きリスト", "番号付きリスト", "引用", "コード", "区切り線", "有料エリア指定"],
+              "evidence_ids": ["note-insert-menu"]
+            },
+            {
+              "id": "selection-toolbar",
+              "owner_field": "body",
+              "items": ["AIアシスタント", "見出し", "太字", "取り消し線", "リスト", "文章の配置", "リンク", "引用", "コード", "削除"],
+              "evidence_ids": ["note-selection-toolbar"]
+            }
+          ],
+          "actions": [
+            {"id": "open-insert-menu", "label": "メニューを開く", "kind": "open insertion menu", "side_effect": "none", "evidence_ids": ["note-insert-menu"]}
+          ]
+        },
+        {
+          "id": "editor-assistance",
+          "label": "Editor assistance",
+          "order": 3,
+          "location": "Left fixed controls",
+          "fields": [],
+          "toolbars": [],
+          "actions": [
+            {"id": "ai-assistant", "label": "AIアシスタント", "kind": "open assistant", "side_effect": "none", "evidence_ids": ["note-dom-editor"]},
+            {"id": "toc", "label": "目次", "kind": "open table of contents", "side_effect": "none", "evidence_ids": ["note-dom-editor"]},
+            {"id": "tips", "label": "noteのヒント", "kind": "open help", "side_effect": "none", "evidence_ids": ["note-dom-editor"]},
+            {"id": "guide", "label": "エディタのガイド", "kind": "open guide", "side_effect": "none", "evidence_ids": ["note-dom-editor"]}
+          ]
+        }
+      ]
+    },
+    {
+      "id": "image-menu",
+      "label": "画像を追加",
+      "order": 2,
+      "entry_condition": "Open the insert menu and select image",
+      "mutation_risk": "none",
+      "sections": [
+        {
+          "id": "image-options",
+          "label": "Image options",
+          "order": 1,
+          "location": "Popover above the body",
+          "fields": [
+            {
+              "id": "upload-image",
+              "label": "画像をアップロード",
+              "order": 1,
+              "control": "upload action; recommended size 1280×670px",
+              "required": false,
+              "content_meaning": "Upload an article image",
+              "copy_unit": "manual file selection",
+              "evidence_ids": ["note-image-menu"]
+            },
+            {
+              "id": "choose-image",
+              "label": "記事にあう画像を選ぶ",
+              "order": 2,
+              "control": "image selection action",
+              "required": false,
+              "content_meaning": "Choose an image suitable for the article",
+              "copy_unit": "manual chooser instruction",
+              "evidence_ids": ["note-image-menu"]
+            },
+            {
+              "id": "adobe-express",
+              "label": "Adobe Expressで画像をつくる",
+              "order": 3,
+              "control": "external image creation action; Adobe free membership required",
+              "required": false,
+              "content_meaning": "Create an image through Adobe Express",
+              "copy_unit": "manual external-action instruction",
+              "evidence_ids": ["note-image-menu"]
+            }
+          ],
+          "toolbars": [],
+          "actions": [
+            {"id": "close-image-menu", "label": "メニューを閉じる", "kind": "dismiss popover", "side_effect": "none", "evidence_ids": ["note-image-menu"]}
+          ]
+        }
+      ]
+    },
+    {
+      "id": "more-menu",
+      "label": "その他",
+      "order": 3,
+      "entry_condition": "Open the more menu",
+      "mutation_risk": "none",
+      "sections": [
+        {
+          "id": "more-actions",
+          "label": "More actions",
+          "order": 1,
+          "location": "Top-right popover",
+          "fields": [],
+          "toolbars": [],
+          "actions": [
+            {"id": "history", "label": "変更履歴", "kind": "open revision history", "side_effect": "none", "evidence_ids": ["note-more-menu"]},
+            {"id": "delete", "label": "削除", "kind": "destructive draft action", "side_effect": "external", "evidence_ids": ["note-more-menu"]}
+          ]
+        }
+      ]
+    },
+    {
+      "id": "publication-settings",
+      "label": "公開設定",
+      "order": 4,
+      "entry_condition": "Select 公開に進む from the editor",
+      "mutation_risk": "possible draft save; settings changes affect the pending publication",
+      "sections": [
+        {
+          "id": "hashtags-and-contests",
+          "label": "ハッシュタグ / お題・コンテスト",
+          "order": 1,
+          "location": "Publication-settings page",
+          "fields": [
+            {"id": "hashtags", "label": "ハッシュタグ", "order": 1, "control": "combobox; placeholder=ハッシュタグを追加する", "required": false, "content_meaning": "Discoverability tags", "copy_unit": "one tag per copy control plus copy-all", "evidence_ids": ["note-publication-settings"]},
+            {"id": "contest-entry", "label": "お題/コンテストに参加", "order": 2, "control": "account- and campaign-dependent picker", "required": false, "content_meaning": "Optional topic or contest association", "copy_unit": "manual selection instruction", "evidence_ids": ["note-publication-settings"]}
+          ],
+          "toolbars": [],
+          "actions": []
+        },
+        {
+          "id": "article-type",
+          "label": "記事タイプ",
+          "order": 2,
+          "location": "Publication-settings page",
+          "fields": [
+            {"id": "article-type", "label": "記事タイプ", "order": 1, "control": "radio choices: 無料 / 有料", "required": true, "content_meaning": "Free or paid article type", "copy_unit": "manual choice instruction", "evidence_ids": ["note-publication-settings"]}
+          ],
+          "toolbars": [],
+          "actions": []
+        },
+        {
+          "id": "article-additions",
+          "label": "記事の追加",
+          "order": 3,
+          "location": "Publication-settings page",
+          "fields": [
+            {"id": "add-to-magazine", "label": "マガジン", "order": 1, "control": "account-dependent selector with 追加 / 追加済 action", "required": false, "content_meaning": "Add the article to a magazine", "copy_unit": "manual account selection instruction", "evidence_ids": ["note-publication-settings"]},
+            {"id": "add-to-membership", "label": "メンバーシップ", "order": 2, "control": "account-dependent selector", "required": false, "content_meaning": "Add the article to a membership", "copy_unit": "manual account selection instruction", "evidence_ids": ["note-publication-settings"]},
+            {"id": "read-later", "label": "あとで読む", "order": 3, "control": "platform-managed article-addition option", "required": false, "content_meaning": "Platform article-addition option", "copy_unit": "manual selection instruction", "evidence_ids": ["note-publication-settings"]}
+          ],
+          "toolbars": [],
+          "actions": []
+        },
+        {
+          "id": "coupon",
+          "label": "クーポン",
+          "order": 4,
+          "location": "Publication-settings page",
+          "fields": [
+            {"id": "coupon", "label": "クーポン", "order": 1, "control": "radio/picker; 使用しない plus account-dependent active coupons", "required": false, "content_meaning": "Optional coupon for a paid article", "copy_unit": "manual account selection instruction", "evidence_ids": ["note-publication-settings"]}
+          ],
+          "toolbars": [],
+          "actions": []
+        },
+        {
+          "id": "detail-settings",
+          "label": "詳細設定",
+          "order": 5,
+          "location": "Publication-settings page",
+          "fields": [
+            {"id": "creator-page-visibility", "label": "クリエイターページに表示", "order": 1, "control": "switch", "required": false, "content_meaning": "Whether the article appears on the creator page", "copy_unit": "manual switch instruction", "evidence_ids": ["note-publication-settings"]},
+            {"id": "automatic-translation", "label": "記事の自動翻訳", "order": 2, "control": "switch", "required": false, "content_meaning": "Allow AI translation and overseas delivery", "copy_unit": "manual switch instruction", "evidence_ids": ["note-publication-settings"]},
+            {"id": "ai-training-compensation", "label": "AI学習対価還元プログラムに参加する", "order": 3, "control": "switch", "required": false, "content_meaning": "Allow text-content provision to partner AI operators under the compensation program", "copy_unit": "manual switch instruction", "evidence_ids": ["note-publication-settings"]},
+            {"id": "accept-comments", "label": "コメントの受けつけ", "order": 4, "control": "switch", "required": false, "content_meaning": "Whether comments are accepted", "copy_unit": "manual switch instruction", "evidence_ids": ["note-publication-settings"]},
+            {"id": "scheduled-publication", "label": "予約投稿", "order": 5, "control": "日時の設定 button; noteプレミアム gated", "required": false, "content_meaning": "Optional scheduled publication", "copy_unit": "manual date/time instruction", "evidence_ids": ["note-publication-settings", "note-premium-schedule-modal"]}
+          ],
+          "toolbars": [],
+          "actions": [
+            {"id": "open-schedule", "label": "日時の設定", "kind": "open scheduling dialog or premium upsell", "side_effect": "none", "evidence_ids": ["note-premium-schedule-modal"]}
+          ]
+        },
+        {
+          "id": "publication-actions",
+          "label": "Publication actions",
+          "order": 6,
+          "location": "Publication-settings header/footer",
+          "fields": [],
+          "toolbars": [],
+          "actions": [
+            {"id": "cancel-publication", "label": "キャンセル", "kind": "return to editor", "side_effect": "none", "evidence_ids": ["note-publication-settings"]},
+            {"id": "final-publish", "label": "投稿する", "kind": "final publication", "side_effect": "external", "evidence_ids": ["note-publication-settings"]}
+          ]
+        }
+      ]
+    },
+    {
+      "id": "premium-schedule-modal",
+      "label": "予約投稿 premium gate",
+      "order": 5,
+      "entry_condition": "Select 日時の設定 when the current account lacks noteプレミアム",
+      "mutation_risk": "none",
+      "sections": [
+        {
+          "id": "premium-message",
+          "label": "Premium requirement",
+          "order": 1,
+          "location": "Modal dialog",
+          "fields": [],
+          "toolbars": [],
+          "actions": [
+            {"id": "close-premium-message", "label": "閉じる", "kind": "dismiss modal", "side_effect": "none", "evidence_ids": ["note-premium-schedule-modal"]},
+            {"id": "learn-premium", "label": "noteプレミアムをくわしく知る", "kind": "open premium information", "side_effect": "none", "evidence_ids": ["note-premium-schedule-modal"]}
+          ]
+        }
+      ]
+    }
+  ],
+  "observed": {
+    "editor_model": "ProseMirror block editor with insertion menu and separate publication-settings flow",
+    "state_flow": ["editor", "optional image-menu, selection-toolbar, or more-menu", "publication-settings", "optional premium-schedule-modal", "manual final 投稿する"],
+    "media_workflows": [
+      {"id": "article-image", "sources": ["upload", "note image chooser", "Adobe Express"], "recommended_dimensions": "1280×670px", "public_url_field_observed": false}
+    ],
+    "link_workflows": [
+      {"id": "body-link", "trigger": "Select body text and choose リンク from the selection toolbar", "result": "The link tool was confirmed. A separate stable URL popover did not appear during the safe selected-text test, so the quick page must provide anchor text and URL separately with a manual paste instruction."}
+    ],
+    "publication_boundary": {"label": "投稿する", "crossed_during_scan": false},
+    "evidence": [
+      {"id": "note-dom-editor", "state_id": "editor", "method": "dom", "summary": "Live DOM captured the title textarea, ProseMirror body, fixed assistance controls, draft save, and publication-navigation actions."},
+      {"id": "note-insert-menu", "state_id": "editor", "method": "interaction", "summary": "Opened and closed the insertion menu; recorded all visible block and media choices."},
+      {"id": "note-image-menu", "state_id": "image-menu", "method": "interaction", "summary": "Opened and closed image options without uploading; recorded upload, chooser, Adobe Express, and 1280×670 recommendation."},
+      {"id": "note-more-menu", "state_id": "more-menu", "method": "interaction", "summary": "Opened and closed the more menu; recorded revision history and destructive delete action."
+      },
+      {"id": "note-selection-toolbar", "state_id": "editor", "method": "temporary-input interaction", "summary": "Inserted and selected a disposable marker, enumerated the selection toolbar, tested the link tool, then removed the marker without saving."},
+      {"id": "note-publication-settings", "state_id": "publication-settings", "method": "interaction", "summary": "Opened publication settings, recorded all ordered sections, account-dependent options, detail switches, and the final 投稿する boundary; restored tested choices and returned to the editor."},
+      {"id": "note-premium-schedule-modal", "state_id": "premium-schedule-modal", "method": "interaction", "summary": "Opened 日時の設定, observed the noteプレミアム requirement modal, and closed it without changing publication state."}
+    ]
+  },
+  "generation_contract": {
+    "profile_status_required": "complete",
+    "ordered_states": ["editor", "image-menu", "more-menu", "publication-settings", "premium-schedule-modal"],
+    "writable_field_mapping": [
+      {"source": "article.title", "target": "title", "copy_control": "copy title"},
+      {"source": "article.body", "target": "body", "copy_control": "copy body for ProseMirror paste"},
+      {"source": "article.image_file", "target": "upload-image", "copy_control": "show local file and manual upload instruction"},
+      {"source": "article.promotion_anchor_text", "target": "body-link", "copy_control": "copy anchor text separately"},
+      {"source": "article.promotion_url", "target": "body-link", "copy_control": "copy URL separately"},
+      {"source": "article.tags", "target": "hashtags", "copy_control": "one copy button per hashtag plus copy-all"},
+      {"source": "publication.article_type", "target": "article-type", "copy_control": "show manual free/paid choice"},
+      {"source": "publication.magazine", "target": "add-to-magazine", "copy_control": "show manual account selection"},
+      {"source": "publication.membership", "target": "add-to-membership", "copy_control": "show manual account selection"},
+      {"source": "publication.coupon", "target": "coupon", "copy_control": "show manual account selection"},
+      {"source": "publication.creator_page_visibility", "target": "creator-page-visibility", "copy_control": "show manual switch choice"},
+      {"source": "publication.automatic_translation", "target": "automatic-translation", "copy_control": "show manual switch choice"},
+      {"source": "publication.ai_training_compensation", "target": "ai-training-compensation", "copy_control": "show manual switch choice"},
+      {"source": "publication.accept_comments", "target": "accept-comments", "copy_control": "show manual switch choice"},
+      {"source": "publication.scheduled_at", "target": "scheduled-publication", "copy_control": "show manual premium-aware scheduling instruction"}
+    ],
+    "coverage_exclusions": [
+      {"field": "image file selection", "condition": "Native upload requires manual local-file selection"},
+      {"field": "contest, magazine, membership, and coupon choices", "condition": "Available values are dynamic and account-controlled; never persist observed account values"},
+      {"field": "scheduled publication", "condition": "May be unavailable unless the account has noteプレミアム"},
+      {"field": "link URL input surface", "condition": "The selection-toolbar link action was verified, but a stable separate URL popover was not exposed during the safe test; provide anchor text and URL as separate copy controls"}
+    ],
+    "manual_final_actions": ["Open 公開に進む after article fields are filled", "Review dynamic account-controlled options", "Keep final 投稿する manual"]
+  },
+  "drift_fingerprint": {
+    "route_patterns": ["https://editor.note.com/notes/{note-id}/edit/"],
+    "major_sections": ["Editor header", "Article fields", "Editor assistance", "ハッシュタグ / お題・コンテスト", "記事タイプ", "記事の追加", "クーポン", "詳細設定", "Publication actions"],
+    "field_signatures": ["記事タイトル:textarea", "本文:ProseMirror contenteditable", "ハッシュタグ:combobox", "記事タイプ:radio", "詳細設定:switches"],
+    "toolbar_capabilities": ["image", "audio", "embed", "file", "comic", "toc", "large-heading", "small-heading", "unordered-list", "ordered-list", "quote", "code", "divider", "paid-area", "bold", "strikethrough", "alignment", "link", "delete"],
+    "publication_labels": ["下書き保存", "公開に進む", "キャンセル", "投稿する"]
+  },
+  "limitations": [
+    "The final 投稿する action, draft save, image upload, delete action, and external premium-information link were intentionally not triggered.",
+    "Dynamic contest, magazine, membership, and coupon values are account-dependent and intentionally excluded from the reusable profile.",
+    "The link selection tool was verified, but its URL-entry surface did not expose a stable separate field during the safe test."
+  ]
+}
